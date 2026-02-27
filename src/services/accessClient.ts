@@ -86,6 +86,10 @@ function sha256Bytes(input: string): Uint8Array {
   return createHash("sha256").update(input, "utf8").digest();
 }
 
+function sha256Buffer(input: Uint8Array | Buffer): Uint8Array {
+  return createHash("sha256").update(input).digest();
+}
+
 function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
   if (typeof raw === "boolean") {
     return { passed: raw, source: mode };
@@ -563,11 +567,10 @@ export class AccessClient {
     return undefined;
   }
 
-  private parseWalletFromLinkAccountData(data: Buffer): PublicKey | undefined {
-    const candidateOffsets = [
-      8 + 1 + 32, // discriminator + version + identity
-      8 + 1 + 32 + 32 // if wallet_hash precedes wallet
-    ];
+  private parseWalletCandidatesFromLinkAccountData(data: Buffer): PublicKey[] {
+    const candidates: PublicKey[] = [];
+
+    const candidateOffsets = [8 + 1 + 32, 8 + 1 + 32 + 32, 8 + 32, 8 + 32 + 32];
 
     for (const offset of candidateOffsets) {
       if (data.length < offset + 32) {
@@ -576,22 +579,55 @@ export class AccessClient {
 
       const slice = data.subarray(offset, offset + 32);
       const isZero = slice.every((x) => x === 0);
-      if (isZero) {
-        continue;
-      }
-
-      if (!PublicKey.isOnCurve(slice)) {
+      if (isZero || !PublicKey.isOnCurve(slice)) {
         continue;
       }
 
       try {
-        return new PublicKey(slice);
+        candidates.push(new PublicKey(slice));
       } catch {
-        continue;
+        // Ignore invalid candidate.
       }
     }
 
-    return undefined;
+    // Also scan aligned 32-byte windows as a fallback for unknown layout changes.
+    for (let offset = 8; offset + 32 <= data.length; offset += 32) {
+      const slice = data.subarray(offset, offset + 32);
+      const isZero = slice.every((x) => x === 0);
+      if (isZero || !PublicKey.isOnCurve(slice)) {
+        continue;
+      }
+
+      try {
+        candidates.push(new PublicKey(slice));
+      } catch {
+        // Ignore invalid candidate.
+      }
+    }
+
+    const deduped = new Map<string, PublicKey>();
+    for (const candidate of candidates) {
+      deduped.set(candidate.toBase58(), candidate);
+    }
+    return Array.from(deduped.values());
+  }
+
+  private walletHashCandidates(wallet: PublicKey): Uint8Array[] {
+    const bytes = wallet.toBytes();
+    const base58 = wallet.toBase58();
+
+    const hashes = [
+      sha256Buffer(bytes),
+      sha256Bytes(base58),
+      sha256Bytes(base58.toLowerCase()),
+      sha256Bytes(Buffer.from(bytes).toString("hex"))
+    ];
+
+    const deduped = new Map<string, Uint8Array>();
+    for (const hash of hashes) {
+      deduped.set(Buffer.from(hash).toString("hex"), hash);
+    }
+    return Array.from(deduped.values());
   }
 
   async getVerifiedWalletForDiscordUser(params: {
@@ -607,7 +643,12 @@ export class AccessClient {
 
     const findGrapeSpacePda = mod.findGrapeSpacePda;
     const findGrapeIdentityPda = mod.findGrapeIdentityPda;
-    if (typeof findGrapeSpacePda !== "function" || typeof findGrapeIdentityPda !== "function") {
+    const findGrapeLinkPda = mod.findGrapeLinkPda;
+    if (
+      typeof findGrapeSpacePda !== "function" ||
+      typeof findGrapeIdentityPda !== "function" ||
+      typeof findGrapeLinkPda !== "function"
+    ) {
       return undefined;
     }
 
@@ -628,44 +669,100 @@ export class AccessClient {
       return undefined;
     }
 
-    const hashInputs = [params.discordUserId, params.discordUserId.trim(), params.discordUserId.toLowerCase()];
-    const uniqueHashes = Array.from(new Set(hashInputs.map((x) => Buffer.from(sha256Bytes(x)).toString("hex")))).map(
-      (hex) => Uint8Array.from(Buffer.from(hex, "hex"))
-    );
+    const rawUserId = params.discordUserId;
+    const normalizedUserId = rawUserId.trim();
+    const normalizedLower = normalizedUserId.toLowerCase();
+    const hashInputs = [
+      rawUserId,
+      normalizedUserId,
+      normalizedLower,
+      `discord:${rawUserId}`,
+      `discord:${normalizedUserId}`,
+      `discord:${normalizedLower}`
+    ];
 
-    for (const idHash of uniqueHashes) {
-      let identityPda: PublicKey;
-      try {
-        const res = (await Promise.resolve(
-          Reflect.apply(findGrapeIdentityPda, mod, [
-            spacePda,
-            0, // VerificationPlatform.Discord
-            idHash,
-            this.verificationProgramId
-          ])
-        )) as [PublicKey, number];
-        identityPda = res[0];
-      } catch {
-        continue;
-      }
+    const uniqueHashes = Array.from(
+      new Set(hashInputs.map((x) => Buffer.from(sha256Bytes(x)).toString("hex")))
+    ).map((hex) => Uint8Array.from(Buffer.from(hex, "hex")));
 
-      const links = await this.withRpcTimeout("getProgramAccounts(link)", () =>
-        this.connection.getProgramAccounts(this.verificationProgramId, {
-          filters: [
-            {
-              memcmp: {
-                offset: 8 + 1,
-                bytes: identityPda.toBase58()
+    const platformSeedCandidates = [0, 1, 2, 3];
+    const linkIdentityOffsets = [8 + 1, 8, 9, 40, 41];
+
+    for (const platformSeed of platformSeedCandidates) {
+      for (const idHash of uniqueHashes) {
+        let identityPda: PublicKey;
+        try {
+          const res = (await Promise.resolve(
+            Reflect.apply(findGrapeIdentityPda, mod, [
+              spacePda,
+              platformSeed,
+              idHash,
+              this.verificationProgramId
+            ])
+          )) as [PublicKey, number];
+          identityPda = res[0];
+        } catch {
+          continue;
+        }
+
+        const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
+          this.connection.getAccountInfo(identityPda, "confirmed")
+        );
+        if (!identityInfo) {
+          continue;
+        }
+
+        const allLinks: Array<{ pubkey: PublicKey; account: { data: Buffer } }> = [];
+        const seenLinkPdas = new Set<string>();
+
+        for (const offset of linkIdentityOffsets) {
+          const links = await this.withRpcTimeout("getProgramAccounts(link)", () =>
+            this.connection.getProgramAccounts(this.verificationProgramId, {
+              filters: [
+                {
+                  memcmp: {
+                    offset,
+                    bytes: identityPda.toBase58()
+                  }
+                }
+              ]
+            })
+          );
+
+          for (const link of links) {
+            const k = link.pubkey.toBase58();
+            if (seenLinkPdas.has(k)) {
+              continue;
+            }
+            seenLinkPdas.add(k);
+            allLinks.push(link as { pubkey: PublicKey; account: { data: Buffer } });
+          }
+        }
+
+        for (const link of allLinks) {
+          const walletCandidates = this.parseWalletCandidatesFromLinkAccountData(link.account.data);
+
+          for (const walletCandidate of walletCandidates) {
+            const hashCandidates = this.walletHashCandidates(walletCandidate);
+
+            for (const walletHash of hashCandidates) {
+              try {
+                const [derivedLinkPda] = (await Promise.resolve(
+                  Reflect.apply(findGrapeLinkPda, mod, [
+                    identityPda,
+                    walletHash,
+                    this.verificationProgramId
+                  ])
+                )) as [PublicKey, number];
+
+                if (derivedLinkPda.equals(link.pubkey)) {
+                  return walletCandidate.toBase58();
+                }
+              } catch {
+                // Ignore this hash form and continue.
               }
             }
-          ]
-        })
-      );
-
-      for (const link of links) {
-        const wallet = this.parseWalletFromLinkAccountData(link.account.data);
-        if (wallet) {
-          return wallet.toBase58();
+          }
         }
       }
     }
