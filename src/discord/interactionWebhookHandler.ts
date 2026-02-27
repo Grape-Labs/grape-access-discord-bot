@@ -219,93 +219,151 @@ export class InteractionWebhookHandler {
   }
 
   private async handleCheck(interaction: DiscordInteraction): Promise<InteractionResult> {
-    const canCheck = hasAnyPermission(interaction.member?.permissions, [
-      PermissionFlagsBits.Administrator,
-      PermissionFlagsBits.ManageRoles,
-      PermissionFlagsBits.ModerateMembers
-    ]);
+    const guildId = interaction.guild_id;
+    const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
 
-    if (!canCheck) {
-      return ephemeralMessage(
-        "Moderator/Admin permissions required (Manage Roles, Moderate Members, or Administrator)."
-      );
+    if (!guildId || !discordUserId) {
+      return ephemeralMessage("This command must be run in a server.");
     }
 
-    const options = interaction.data?.options;
-    const gateId = getOptionString(options, "gate_id");
-    const wallet = getOptionString(options, "user_wallet");
-
-    if (!gateId || !wallet) {
-      return ephemeralMessage("Missing required options: gate_id, user_wallet.");
+    const maps = this.store.listEnabledGateMappings(guildId);
+    if (maps.length === 0) {
+      return ephemeralMessage("No enabled gate mappings found for this guild. Run /setup-gate first.");
     }
 
-    const mode = config.checkMode === "write" ? "onchain_write" : "simulate";
-
-    try {
-      const result = await retryWithBackoff(
-        () => this.accessClient.checkAccess({ gateId, walletPubkey: wallet, mode }),
-        {
-          maxAttempts: 4,
-          baseDelayMs: 500,
-          maxDelayMs: 4_000
+    let latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
+    if (!latestLink) {
+      for (const map of maps) {
+        const onchainDaoId = map.daoId ?? (await this.accessClient.getGateDaoId(map.gateId));
+        if (!onchainDaoId) {
+          continue;
         }
-      );
 
-      this.store.addCheckResult({
-        guildId: interaction.guild_id,
-        walletPubkey: wallet,
-        gateId,
-        passed: result.passed,
-        source: `command:${result.source}`,
-        reason: result.reason,
-        proof: result.proof
-      });
+        if (map.daoId !== onchainDaoId) {
+          this.store.upsertGateMapping({
+            guildId: map.guildId,
+            gateId: map.gateId,
+            daoId: onchainDaoId,
+            passRoleId: map.passRoleId,
+            failAction: map.failAction,
+            enabled: map.enabled
+          });
+        }
 
-      logger.info(
-        {
-          guild_id: interaction.guild_id,
-          gate_id: gateId,
-          user: interaction.member?.user?.id ?? interaction.user?.id,
-          wallet,
-          result: result.passed ? "pass" : "fail",
-          reason: result.reason,
-          proof: result.proof
-        },
-        "Manual gate check"
-      );
+        const walletFromVerification = await this.accessClient.getVerifiedWalletForDiscordUser({
+          daoId: onchainDaoId,
+          discordUserId
+        });
 
+        if (walletFromVerification) {
+          this.store.addWalletLink({
+            discordUserId,
+            guildId,
+            walletPubkey: walletFromVerification,
+            source: "onchain_verification_lookup"
+          });
+
+          latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
+          break;
+        }
+      }
+    }
+
+    if (!latestLink) {
       return ephemeralMessage(
         [
-          `Result: ${result.passed ? "PASS" : "FAIL"}`,
-          `source: ${result.source}`,
-          `reason: ${result.reason ?? "none"}`
+          "No linked wallet found for your Discord user.",
+          "Run /verify and complete verification first so the bot can read your latest verified wallet.",
+          "If already verified on-chain, ensure dao_id can be resolved for this gate."
         ].join("\n")
       );
-    } catch (err) {
-      const reason = String(err);
-      this.store.addCheckResult({
-        guildId: interaction.guild_id,
-        walletPubkey: wallet,
-        gateId,
-        passed: false,
-        source: "command:error",
-        reason
-      });
-
-      logger.error(
-        {
-          guild_id: interaction.guild_id,
-          gate_id: gateId,
-          user: interaction.member?.user?.id ?? interaction.user?.id,
-          wallet,
-          result: "error",
-          reason
-        },
-        "Manual gate check failed"
-      );
-
-      return ephemeralMessage(`Check failed: ${reason}`);
     }
+
+    const wallet = latestLink.walletPubkey;
+    const mode = config.checkMode === "write" ? "onchain_write" : "simulate";
+    const lines: string[] = [
+      `wallet: ${wallet}`,
+      `verified_at: ${latestLink.verifiedAt}`
+    ];
+    let passedCount = 0;
+    let failedCount = 0;
+
+    for (const map of maps) {
+      try {
+        const result = await retryWithBackoff(
+          () => this.accessClient.checkAccess({ gateId: map.gateId, walletPubkey: wallet, mode }),
+          {
+            maxAttempts: 4,
+            baseDelayMs: 500,
+            maxDelayMs: 4_000
+          }
+        );
+
+        this.store.addCheckResult({
+          guildId,
+          discordUserId,
+          walletPubkey: wallet,
+          gateId: map.gateId,
+          passed: result.passed,
+          source: `command:${result.source}`,
+          reason: result.reason,
+          proof: result.proof
+        });
+
+        if (result.passed) {
+          passedCount += 1;
+        } else {
+          failedCount += 1;
+        }
+
+        lines.push(
+          `gate ${map.gateId}: ${result.passed ? "PASS" : "FAIL"} (${result.reason ?? "no_reason"})`
+        );
+
+        logger.info(
+          {
+            guild_id: guildId,
+            gate_id: map.gateId,
+            user: discordUserId,
+            wallet,
+            result: result.passed ? "pass" : "fail",
+            reason: result.reason,
+            proof: result.proof
+          },
+          "User self check"
+        );
+      } catch (err) {
+        const reason = String(err);
+
+        failedCount += 1;
+        lines.push(`gate ${map.gateId}: ERROR (${reason})`);
+
+        this.store.addCheckResult({
+          guildId,
+          discordUserId,
+          walletPubkey: wallet,
+          gateId: map.gateId,
+          passed: false,
+          source: "command:error",
+          reason
+        });
+
+        logger.error(
+          {
+            guild_id: guildId,
+            gate_id: map.gateId,
+            user: discordUserId,
+            wallet,
+            result: "error",
+            reason
+          },
+          "User self check failed"
+        );
+      }
+    }
+
+    lines.unshift(`summary: pass=${passedCount} fail=${failedCount}`);
+    return ephemeralMessage(lines.join("\n"));
   }
 
   private async handleSyncGate(interaction: DiscordInteraction): Promise<InteractionResult> {

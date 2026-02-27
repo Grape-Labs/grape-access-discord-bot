@@ -22,6 +22,7 @@ const envSchema = z.object({
   CRON_SECRET: z.string().optional(),
   MAX_SYNC_JOBS_PER_CRON: z.coerce.number().int().positive().default(3),
   MAX_USERS_PER_SYNC: z.coerce.number().int().positive().default(500),
+  RPC_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
   BOOTSTRAP_GATES_JSON: z.string().optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
@@ -115,6 +116,7 @@ export const config = {
   cronSecret: env.CRON_SECRET,
   maxSyncJobsPerCron: env.MAX_SYNC_JOBS_PER_CRON,
   maxUsersPerSync: env.MAX_USERS_PER_SYNC,
+  rpcRequestTimeoutMs: env.RPC_REQUEST_TIMEOUT_MS,
   bootstrapGates: parseBootstrapGates(env.BOOTSTRAP_GATES_JSON),
   logLevel: env.LOG_LEVEL,
   programs: {

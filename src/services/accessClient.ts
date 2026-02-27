@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -81,6 +82,10 @@ function getNested(obj: unknown, path: string[]): unknown {
   return current;
 }
 
+function sha256Bytes(input: string): Uint8Array {
+  return createHash("sha256").update(input, "utf8").digest();
+}
+
 function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
   if (typeof raw === "boolean") {
     return { passed: raw, source: mode };
@@ -134,6 +139,23 @@ export class AccessClient {
   constructor() {
     this.connection = new Connection(config.rpcEndpoint, "confirmed");
     this.onchainSigner = this.loadOnchainSigner();
+  }
+
+  private async withRpcTimeout<T>(label: string, task: () => Promise<T>): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    try {
+      const timeoutPromise = new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${config.rpcRequestTimeoutMs}ms (${config.rpcEndpoint})`));
+        }, config.rpcRequestTimeoutMs);
+      });
+
+      return await Promise.race([task(), timeoutPromise]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private loadOnchainSigner(): Keypair | undefined {
@@ -357,10 +379,12 @@ export class AccessClient {
       argsVariants.unshift([{ gateId: gatePublicKey }], [{ accessId: gatePublicKey }], [gatePublicKey]);
     }
 
-    return this.invokeFirst(
-      ["fetchAccess", "fetchGate", "getAccess", "getGate", "fetchAccessById", "gateById", "accessById"],
-      argsVariants,
-      "Unable to fetch gate account"
+    return this.withRpcTimeout("fetchGateObject", () =>
+      this.invokeFirst(
+        ["fetchAccess", "fetchGate", "getAccess", "getGate", "fetchAccessById", "gateById", "accessById"],
+        argsVariants,
+        "Unable to fetch gate account"
+      )
     );
   }
 
@@ -444,7 +468,9 @@ export class AccessClient {
       return cached;
     }
 
-    const info = await this.connection.getAccountInfo(params.sourcePda, "confirmed");
+    const info = await this.withRpcTimeout("getAccountInfo", () =>
+      this.connection.getAccountInfo(params.sourcePda, "confirmed")
+    );
     if (!info) {
       return undefined;
     }
@@ -531,6 +557,116 @@ export class AccessClient {
       });
       if (daoId) {
         return daoId;
+      }
+    }
+
+    return undefined;
+  }
+
+  private parseWalletFromLinkAccountData(data: Buffer): PublicKey | undefined {
+    const candidateOffsets = [
+      8 + 1 + 32, // discriminator + version + identity
+      8 + 1 + 32 + 32 // if wallet_hash precedes wallet
+    ];
+
+    for (const offset of candidateOffsets) {
+      if (data.length < offset + 32) {
+        continue;
+      }
+
+      const slice = data.subarray(offset, offset + 32);
+      const isZero = slice.every((x) => x === 0);
+      if (isZero) {
+        continue;
+      }
+
+      if (!PublicKey.isOnCurve(slice)) {
+        continue;
+      }
+
+      try {
+        return new PublicKey(slice);
+      } catch {
+        continue;
+      }
+    }
+
+    return undefined;
+  }
+
+  async getVerifiedWalletForDiscordUser(params: {
+    daoId: string;
+    discordUserId: string;
+  }): Promise<string | undefined> {
+    let mod: Record<string, unknown>;
+    try {
+      mod = (await import("@grapenpm/grape-access-sdk")) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+
+    const findGrapeSpacePda = mod.findGrapeSpacePda;
+    const findGrapeIdentityPda = mod.findGrapeIdentityPda;
+    if (typeof findGrapeSpacePda !== "function" || typeof findGrapeIdentityPda !== "function") {
+      return undefined;
+    }
+
+    let daoPk: PublicKey;
+    try {
+      daoPk = new PublicKey(params.daoId);
+    } catch {
+      return undefined;
+    }
+
+    let spacePda: PublicKey;
+    try {
+      const res = (await Promise.resolve(
+        Reflect.apply(findGrapeSpacePda, mod, [daoPk, this.verificationProgramId])
+      )) as [PublicKey, number];
+      spacePda = res[0];
+    } catch {
+      return undefined;
+    }
+
+    const hashInputs = [params.discordUserId, params.discordUserId.trim(), params.discordUserId.toLowerCase()];
+    const uniqueHashes = Array.from(new Set(hashInputs.map((x) => Buffer.from(sha256Bytes(x)).toString("hex")))).map(
+      (hex) => Uint8Array.from(Buffer.from(hex, "hex"))
+    );
+
+    for (const idHash of uniqueHashes) {
+      let identityPda: PublicKey;
+      try {
+        const res = (await Promise.resolve(
+          Reflect.apply(findGrapeIdentityPda, mod, [
+            spacePda,
+            0, // VerificationPlatform.Discord
+            idHash,
+            this.verificationProgramId
+          ])
+        )) as [PublicKey, number];
+        identityPda = res[0];
+      } catch {
+        continue;
+      }
+
+      const links = await this.withRpcTimeout("getProgramAccounts(link)", () =>
+        this.connection.getProgramAccounts(this.verificationProgramId, {
+          filters: [
+            {
+              memcmp: {
+                offset: 8 + 1,
+                bytes: identityPda.toBase58()
+              }
+            }
+          ]
+        })
+      );
+
+      for (const link of links) {
+        const wallet = this.parseWalletFromLinkAccountData(link.account.data);
+        if (wallet) {
+          return wallet.toBase58();
+        }
       }
     }
 
@@ -632,10 +768,12 @@ export class AccessClient {
       [input.walletPubkey, gateId, { write: shouldWrite, cluster: config.cluster }]
     ];
 
-    const raw = await this.invokeFirst(
-      ["checkAccess", "checkGateAccess", "check", "canAccess", "evaluateAccess"],
-      argsVariants,
-      "Access check failed"
+    const raw = await this.withRpcTimeout("checkAccess", () =>
+      this.invokeFirst(
+        ["checkAccess", "checkGateAccess", "check", "canAccess", "evaluateAccess"],
+        argsVariants,
+        "Access check failed"
+      )
     );
 
     return normalizeResult(raw, shouldWrite ? "onchain_write" : "simulate");

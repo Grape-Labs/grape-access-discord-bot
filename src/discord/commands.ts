@@ -34,13 +34,7 @@ export const commandBuilders = [
 
   new SlashCommandBuilder()
     .setName("check")
-    .setDescription("Check if a wallet currently passes a gate")
-    .addStringOption((opt) =>
-      opt.setName("user_wallet").setDescription("Wallet pubkey").setRequired(true)
-    )
-    .addStringOption((opt) =>
-      opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
-    ),
+    .setDescription("Check your linked wallet against configured gate(s)"),
 
   new SlashCommandBuilder()
     .setName("sync-gate")

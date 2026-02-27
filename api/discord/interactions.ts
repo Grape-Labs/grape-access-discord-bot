@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import nacl from "tweetnacl";
 import { config } from "../../src/config.js";
+import { logger } from "../../src/logger.js";
 import { InMemoryStore } from "../../src/store.js";
 import { AccessClient } from "../../src/services/accessClient.js";
 import { ManifestService } from "../../src/services/manifestService.js";
@@ -30,6 +31,39 @@ const discordClient = new DiscordRestClient();
 const gateSyncService = new GateSyncService(store, accessClient, manifestService, discordClient);
 const handler = new InteractionWebhookHandler(store, accessClient, manifestService, gateSyncService);
 
+const InteractionResponseType = {
+  PONG: 1,
+  DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE: 5
+} as const;
+
+function extractContent(result: Record<string, unknown>): string {
+  const data = result.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return "Done.";
+  }
+  const content = (data as Record<string, unknown>).content;
+  return typeof content === "string" && content.length > 0 ? content : "Done.";
+}
+
+async function editOriginalInteractionResponse(params: {
+  applicationId: string;
+  interactionToken: string;
+  content: string;
+}): Promise<void> {
+  await fetch(
+    `https://discord.com/api/v10/webhooks/${params.applicationId}/${params.interactionToken}/messages/@original`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        content: params.content
+      })
+    }
+  );
+}
+
 export default async function interactions(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== "POST") {
     res.status(405).json({ error: "method_not_allowed" });
@@ -57,6 +91,52 @@ export default async function interactions(req: VercelRequest, res: VercelRespon
     return;
   }
 
-  const result = await handler.handle(payload as never);
-  res.status(result.status).json(result.body);
+  const interaction = payload as Record<string, unknown>;
+  const type = typeof interaction.type === "number" ? interaction.type : undefined;
+  const interactionToken =
+    typeof interaction.token === "string" && interaction.token.length > 0 ? interaction.token : undefined;
+  const applicationId =
+    typeof interaction.application_id === "string" && interaction.application_id.length > 0
+      ? interaction.application_id
+      : config.discordAppId;
+
+  if (type === 1) {
+    res.status(200).json({ type: InteractionResponseType.PONG });
+    return;
+  }
+
+  if (!interactionToken || !applicationId) {
+    const result = await handler.handle(payload as never);
+    res.status(result.status).json(result.body);
+    return;
+  }
+
+  res.status(200).json({
+    type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+    data: { flags: 64 }
+  });
+
+  void (async () => {
+    try {
+      const result = await handler.handle(payload as never);
+      const content = extractContent(result.body);
+      await editOriginalInteractionResponse({
+        applicationId,
+        interactionToken,
+        content
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, "Deferred interaction handling failed");
+      try {
+        await editOriginalInteractionResponse({
+          applicationId,
+          interactionToken,
+          content:
+            "Request failed while processing RPC checks. Verify RPC_ENDPOINT health and try again."
+        });
+      } catch {
+        // Ignore follow-up failures.
+      }
+    }
+  })();
 }

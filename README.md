@@ -30,8 +30,14 @@ DAO ID resolution for `/verify` links:
 
 - `/setup-gate gate_id guild_id pass_role_id [dao_id] [fail_action]`
 - `/verify`
-- `/check user_wallet gate_id`
+- `/check`
 - `/sync-gate gate_id [dry_run]`
+
+`/check` behavior:
+
+- Uses your latest linked wallet for this guild
+- Checks all enabled gate mappings for the guild
+- If no local wallet link exists, attempts on-chain Grape Verification lookup via DAO + Discord identity
 
 ## Environment variables
 
