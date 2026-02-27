@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import nacl from "tweetnacl";
+import { waitUntil } from "@vercel/functions";
 import { config } from "../../src/config.js";
 import { logger } from "../../src/logger.js";
 import { InMemoryStore } from "../../src/store.js";
@@ -50,7 +51,7 @@ async function editOriginalInteractionResponse(params: {
   interactionToken: string;
   content: string;
 }): Promise<void> {
-  await fetch(
+  const response = await fetch(
     `https://discord.com/api/v10/webhooks/${params.applicationId}/${params.interactionToken}/messages/@original`,
     {
       method: "PATCH",
@@ -62,6 +63,13 @@ async function editOriginalInteractionResponse(params: {
       })
     }
   );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to edit interaction response (${response.status}): ${body || response.statusText}`
+    );
+  }
 }
 
 export default async function interactions(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -116,7 +124,7 @@ export default async function interactions(req: VercelRequest, res: VercelRespon
     data: { flags: 64 }
   });
 
-  void (async () => {
+  waitUntil((async () => {
     try {
       const result = await handler.handle(payload as never);
       const content = extractContent(result.body);
@@ -138,5 +146,5 @@ export default async function interactions(req: VercelRequest, res: VercelRespon
         // Ignore follow-up failures.
       }
     }
-  })();
+  })());
 }
