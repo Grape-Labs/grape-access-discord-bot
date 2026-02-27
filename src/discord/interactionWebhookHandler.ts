@@ -183,7 +183,7 @@ export class InteractionWebhookHandler {
       );
     }
 
-    const lines: string[] = ["Verification links:"];
+    const lines: string[] = ["Access Links:"];
     for (const map of maps) {
       const hints = await this.manifestService.getHints(map.gateId);
       const onchainDaoId = map.daoId ? undefined : await this.accessClient.getGateDaoId(map.gateId);
