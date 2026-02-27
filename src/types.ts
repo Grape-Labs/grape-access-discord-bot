@@ -2,49 +2,40 @@ export type FailAction = "none" | "remove_role";
 
 export type CheckSource = "simulate" | "onchain_write";
 
-export interface GuildGateMap {
-  guild_id: string;
-  gate_id: string;
-  pass_role_id: string;
-  fail_action: FailAction;
-  enabled: number;
-  updated_at: string;
+export interface GateMapping {
+  guildId: string;
+  gateId: string;
+  passRoleId: string;
+  failAction: FailAction;
+  enabled: boolean;
+  updatedAt: string;
 }
 
-export interface UserWalletLink {
-  id: number;
-  discord_user_id: string;
-  wallet_pubkey: string;
-  guild_id: string;
-  verified_at: string;
+export interface WalletLink {
+  discordUserId: string;
+  walletPubkey: string;
+  guildId: string;
+  verifiedAt: string;
   source: string;
 }
 
-export interface LatestUserWalletLink {
-  discord_user_id: string;
-  wallet_pubkey: string;
-  guild_id: string;
-  verified_at: string;
+export interface LatestWalletLink {
+  discordUserId: string;
+  walletPubkey: string;
+  guildId: string;
+  verifiedAt: string;
 }
 
-export interface CheckResultRow {
-  id: number;
-  discord_user_id: string | null;
-  wallet_pubkey: string;
-  gate_id: string;
-  passed: number;
-  checked_at: string;
+export interface CheckResult {
+  discordUserId?: string;
+  guildId?: string;
+  walletPubkey: string;
+  gateId: string;
+  passed: boolean;
+  checkedAt: string;
   source: string;
-  proof: string | null;
-  reason: string | null;
-}
-
-export interface BotSettings {
-  id: number;
-  recheck_interval_sec: number;
-  rpc_endpoint: string;
-  cluster: string;
-  updated_at: string;
+  proof?: Record<string, unknown>;
+  reason?: string;
 }
 
 export interface AccessCheckResult {
@@ -67,4 +58,13 @@ export interface AccessManifestHints {
   revalidation?: {
     intervalSeconds?: number;
   };
+}
+
+export interface SyncJob {
+  id: string;
+  guildId: string;
+  gateId: string;
+  requestedBy: string;
+  dryRun: boolean;
+  createdAt: string;
 }

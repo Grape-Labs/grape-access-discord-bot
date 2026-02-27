@@ -1,33 +1,49 @@
-# Grape Access Discord Bot
+# Grape Access Discord Bot (Vercel, No Database)
 
-Discord bot that assigns/removes guild roles based on Grape Access gate checks.
+Discord bot that assigns/removes roles based on Grape Access checks using:
 
-## Features
+- Discord Interactions webhook (`/api/discord/interactions`)
+- Verification callback (`/api/verification/link`)
+- Vercel Cron worker (`/api/cron/revalidate`)
 
-- Slash commands:
-  - `/setup-gate gate_id guild_id pass_role_id [fail_action]`
-  - `/verify`
-  - `/check user_wallet gate_id`
-  - `/sync-gate gate_id`
-- SQLite persistence for gate mappings, identity links, and check history.
-- Revalidation worker that re-checks mapped users on an interval.
-- Gate metadata manifest (`grape.access-manifest.v1`) support with DB/config overrides.
-- Structured logs for checks and role updates.
-- Dry-run mode for sync/revalidation role changes.
+## Important limitation
 
-## Required env vars
+This version intentionally uses **no database**.
 
-Copy `.env.example` and set values.
+State is in-memory only:
 
-- `DISCORD_TOKEN`: bot token.
-- `DISCORD_CLIENT_ID`: application client ID.
-- `DISCORD_GUILD_ID`: default guild for command registration.
-- `RPC_ENDPOINT`: Solana RPC URL.
-- `CLUSTER`: `mainnet-beta` | `devnet` | `testnet`.
-- `CHECK_MODE`: `simulate` (default) or `write`.
-- `ACCESS_FRONTEND_BASE_URL`: frontend origin that serves `/access`.
+- Gate mappings from `/setup-gate`
+- User wallet links from `/api/verification/link`
+- Sync jobs from `/sync-gate`
 
-## Setup
+That means state can reset on cold starts, scale events, and deployments.
+
+Use `BOOTSTRAP_GATES_JSON` to pre-load gate mappings each time the runtime starts.
+
+## Commands
+
+- `/setup-gate gate_id guild_id pass_role_id [fail_action]`
+- `/verify`
+- `/check user_wallet gate_id`
+- `/sync-gate gate_id [dry_run]`
+
+## Environment variables
+
+Copy `.env.example` and set:
+
+- `DISCORD_APP_ID`
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_PUBLIC_KEY`
+- `ACCESS_FRONTEND_BASE_URL`
+
+Optional:
+
+- `DISCORD_COMMAND_GUILD_ID` (faster command updates)
+- `VERIFY_SHARED_SECRET`
+- `CRON_SECRET`
+- `BOOTSTRAP_GATES_JSON`
+
+## Local dev
 
 ```bash
 npm install
@@ -35,32 +51,25 @@ npm run register-commands
 npm run dev
 ```
 
-## Verification link callback
+## Verification callback format
 
-To persist `user_wallet_links`, post verification results to:
+POST `/api/verification/link`
 
-- `POST /verification/link`
-- Optional auth header: `x-verify-secret: <VERIFY_SHARED_SECRET>`
-- JSON body:
-  - `discordUserId`
-  - `walletPubkey`
-  - `guildId`
-  - Optional: `verifiedAt`, `source`
+Headers:
 
-## Data model
+- `x-verify-secret: <VERIFY_SHARED_SECRET>` (if configured)
 
-Tables:
+JSON body:
 
-- `guild_gate_map(guild_id, gate_id, pass_role_id, fail_action, enabled)`
-- `user_wallet_links(discord_user_id, wallet_pubkey, guild_id, verified_at)`
-- `check_results(discord_user_id, wallet_pubkey, gate_id, passed, checked_at, source, proof)`
-- `bot_settings(recheck_interval_sec, rpc_endpoint, cluster)`
+- `discordUserId` (required)
+- `walletPubkey` (required)
+- `guildId` (required)
+- `gateId` (optional; if set, syncs only that gate)
+- `verifiedAt` (optional)
+- `source` (optional)
 
-## Notes
+## Program IDs
 
-- Never stores user private keys.
-- Bot should have least-privilege role permissions (manage roles only where required).
-- `/verify` returns links:
-  - Access check: `<ACCESS_FRONTEND_BASE_URL>/access?gateId=<gate_id>`
-  - Verification: `https://verification.governance.so/dao/<DAO_ID>`
-  - Reputation: `https://vine.governance.so/dao/<DAO_ID>`
+- Access: `GPASSzQQF1H8cdj5pUwFkeYEE4VdMQtCrYtUaMXvPz48`
+- Verification: `VrFyyRxPoyWxpABpBXU4YUCCF9p8giDSJUv2oXfDr5q`
+- Reputation: `V1NE6WCWJPRiVFq5DtaN8p87M9DmmUd2zQuVbvLgQwX`

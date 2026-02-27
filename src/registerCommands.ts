@@ -3,18 +3,18 @@ import { config } from "./config.js";
 import { commandDefinitions } from "./discord/commands.js";
 
 async function main(): Promise<void> {
-  const rest = new REST({ version: "10" }).setToken(config.discordToken);
+  const rest = new REST({ version: "10" }).setToken(config.discordBotToken);
 
-  if (config.discordGuildId) {
+  if (config.discordCommandGuildId) {
     await rest.put(
-      Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId),
+      Routes.applicationGuildCommands(config.discordAppId, config.discordCommandGuildId),
       { body: commandDefinitions }
     );
-    console.log(`Registered guild commands for ${config.discordGuildId}`);
+    console.log(`Registered guild commands for ${config.discordCommandGuildId}`);
     return;
   }
 
-  await rest.put(Routes.applicationCommands(config.discordClientId), {
+  await rest.put(Routes.applicationCommands(config.discordAppId), {
     body: commandDefinitions
   });
   console.log("Registered global commands");

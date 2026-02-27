@@ -1,11 +1,11 @@
-import { Client, Guild, GuildMember, Role } from "discord.js";
-import { BotDatabase } from "../database.js";
-import { AccessClient } from "./accessClient.js";
-import { ManifestService } from "./manifestService.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { CheckSource, GuildGateMap } from "../types.js";
+import { InMemoryStore } from "../store.js";
+import { CheckSource, GateMapping } from "../types.js";
 import { retryWithBackoff } from "../utils/backoff.js";
+import { AccessClient } from "./accessClient.js";
+import { DiscordRestClient } from "./discordRestClient.js";
+import { ManifestService } from "./manifestService.js";
 
 export interface SyncSummary {
   guildId: string;
@@ -22,51 +22,29 @@ export interface SyncSummary {
 
 interface SyncOptions {
   dryRun?: boolean;
-  trigger: "worker" | "command";
+  trigger: "cron" | "command" | "callback";
   sourceLabel: string;
+  singleDiscordUserId?: string;
 }
 
 export class GateSyncService {
   constructor(
-    private readonly client: Client,
-    private readonly db: BotDatabase,
+    private readonly store: InMemoryStore,
     private readonly accessClient: AccessClient,
-    private readonly manifestService: ManifestService
+    private readonly manifestService: ManifestService,
+    private readonly discordClient: DiscordRestClient
   ) {}
 
-  private async fetchGuild(guildId: string): Promise<Guild> {
-    const cached = this.client.guilds.cache.get(guildId);
-    if (cached) {
-      return cached;
-    }
-    return this.client.guilds.fetch(guildId);
-  }
-
-  private async fetchMember(guild: Guild, discordUserId: string): Promise<GuildMember | null> {
-    try {
-      return await guild.members.fetch(discordUserId);
-    } catch {
-      return null;
-    }
-  }
-
-  private async fetchRole(guild: Guild, roleId: string): Promise<Role | null> {
-    try {
-      const role = await guild.roles.fetch(roleId);
-      return role ?? null;
-    } catch {
-      return null;
-    }
-  }
-
   private async applyRoleOutcome(params: {
-    member: GuildMember;
-    role: Role;
+    guildId: string;
+    userId: string;
+    roleId: string;
+    memberRoles: string[];
     passed: boolean;
-    failAction: GuildGateMap["fail_action"];
+    failAction: GateMapping["failAction"];
     dryRun: boolean;
   }): Promise<"granted" | "removed" | "none"> {
-    const hasRole = params.member.roles.cache.has(params.role.id);
+    const hasRole = params.memberRoles.includes(params.roleId);
 
     if (params.passed) {
       if (hasRole) {
@@ -77,7 +55,12 @@ export class GateSyncService {
         return "granted";
       }
 
-      await params.member.roles.add(params.role.id, "Grape Access gate check passed");
+      await this.discordClient.addRole(
+        params.guildId,
+        params.userId,
+        params.roleId,
+        "Grape Access gate check passed"
+      );
       return "granted";
     }
 
@@ -86,20 +69,25 @@ export class GateSyncService {
         return "removed";
       }
 
-      await params.member.roles.remove(params.role.id, "Grape Access gate check failed");
+      await this.discordClient.removeRole(
+        params.guildId,
+        params.userId,
+        params.roleId,
+        "Grape Access gate check failed"
+      );
       return "removed";
     }
 
     return "none";
   }
 
-  async syncGate(gateMap: GuildGateMap, options: SyncOptions): Promise<SyncSummary> {
+  async syncGate(gateMap: GateMapping, options: SyncOptions): Promise<SyncSummary> {
     const dryRun = options.dryRun ?? config.dryRunSync;
     const checkMode: CheckSource = config.checkMode === "write" ? "onchain_write" : "simulate";
 
     const summary: SyncSummary = {
-      guildId: gateMap.guild_id,
-      gateId: gateMap.gate_id,
+      guildId: gateMap.guildId,
+      gateId: gateMap.gateId,
       checked: 0,
       passed: 0,
       failed: 0,
@@ -110,17 +98,24 @@ export class GateSyncService {
       dryRun
     };
 
-    const guild = await this.fetchGuild(gateMap.guild_id);
-    const role = await this.fetchRole(guild, gateMap.pass_role_id);
-    if (!role) {
-      throw new Error(`Pass role ${gateMap.pass_role_id} not found in guild ${gateMap.guild_id}`);
+    const roleExists = await this.discordClient.fetchRole(gateMap.guildId, gateMap.passRoleId);
+    if (!roleExists) {
+      throw new Error(`Pass role ${gateMap.passRoleId} not found in guild ${gateMap.guildId}`);
     }
 
-    const hints = await this.manifestService.getHints(gateMap.gate_id);
-    const links = this.db.listLatestWalletLinksForGuild(gateMap.guild_id);
+    const hints = await this.manifestService.getHints(gateMap.gateId);
+
+    let links = this.store.listLatestWalletLinksForGuild(gateMap.guildId);
+    if (options.singleDiscordUserId) {
+      links = links.filter((item) => item.discordUserId === options.singleDiscordUserId);
+    }
+
+    if (links.length > config.maxUsersPerSync) {
+      links = links.slice(0, config.maxUsersPerSync);
+    }
 
     for (const link of links) {
-      const member = await this.fetchMember(guild, link.discord_user_id);
+      const member = await this.discordClient.fetchMember(gateMap.guildId, link.discordUserId);
       if (!member) {
         summary.skippedNoMember += 1;
         continue;
@@ -132,8 +127,8 @@ export class GateSyncService {
         const result = await retryWithBackoff(
           () =>
             this.accessClient.checkAccess({
-              gateId: gateMap.gate_id,
-              walletPubkey: link.wallet_pubkey,
+              gateId: gateMap.gateId,
+              walletPubkey: link.walletPubkey,
               mode: checkMode
             }),
           {
@@ -144,10 +139,10 @@ export class GateSyncService {
           (attempt, err, delayMs) => {
             logger.warn(
               {
-                guild_id: gateMap.guild_id,
-                gate_id: gateMap.gate_id,
-                user: link.discord_user_id,
-                wallet: link.wallet_pubkey,
+                guild_id: gateMap.guildId,
+                gate_id: gateMap.gateId,
+                user: link.discordUserId,
+                wallet: link.walletPubkey,
                 attempt,
                 delay_ms: delayMs,
                 err: String(err)
@@ -157,11 +152,13 @@ export class GateSyncService {
           }
         );
 
-        const applied = await this.applyRoleOutcome({
-          member,
-          role,
+        const action = await this.applyRoleOutcome({
+          guildId: gateMap.guildId,
+          userId: link.discordUserId,
+          roleId: gateMap.passRoleId,
+          memberRoles: member.roles,
           passed: result.passed,
-          failAction: gateMap.fail_action,
+          failAction: gateMap.failAction,
           dryRun
         });
 
@@ -171,37 +168,38 @@ export class GateSyncService {
           summary.failed += 1;
         }
 
-        if (applied === "granted") {
+        if (action === "granted") {
           summary.roleGranted += 1;
         }
 
-        if (applied === "removed") {
+        if (action === "removed") {
           summary.roleRemoved += 1;
         }
 
-        this.db.insertCheckResult({
-          discordUserId: link.discord_user_id,
-          walletPubkey: link.wallet_pubkey,
-          gateId: gateMap.gate_id,
+        this.store.addCheckResult({
+          discordUserId: link.discordUserId,
+          guildId: gateMap.guildId,
+          walletPubkey: link.walletPubkey,
+          gateId: gateMap.gateId,
           passed: result.passed,
           source: `${options.sourceLabel}:${result.source}`,
           reason: result.reason,
           proof: {
             ...(result.proof ?? {}),
-            verifiedAt: link.verified_at,
+            verifiedAt: link.verifiedAt,
             manifestSchemaValid: hints.schemaValid
           }
         });
 
         logger.info(
           {
-            guild_id: gateMap.guild_id,
-            gate_id: gateMap.gate_id,
-            user: link.discord_user_id,
-            wallet: link.wallet_pubkey,
+            guild_id: gateMap.guildId,
+            gate_id: gateMap.gateId,
+            user: link.discordUserId,
+            wallet: link.walletPubkey,
             result: result.passed ? "pass" : "fail",
             reason: result.reason,
-            action: applied,
+            action,
             proof: result.proof,
             trigger: options.trigger,
             dry_run: dryRun
@@ -211,10 +209,12 @@ export class GateSyncService {
       } catch (err) {
         summary.errors += 1;
         const reason = String(err);
-        this.db.insertCheckResult({
-          discordUserId: link.discord_user_id,
-          walletPubkey: link.wallet_pubkey,
-          gateId: gateMap.gate_id,
+
+        this.store.addCheckResult({
+          discordUserId: link.discordUserId,
+          guildId: gateMap.guildId,
+          walletPubkey: link.walletPubkey,
+          gateId: gateMap.gateId,
           passed: false,
           source: `${options.sourceLabel}:error`,
           reason
@@ -222,10 +222,10 @@ export class GateSyncService {
 
         logger.error(
           {
-            guild_id: gateMap.guild_id,
-            gate_id: gateMap.gate_id,
-            user: link.discord_user_id,
-            wallet: link.wallet_pubkey,
+            guild_id: gateMap.guildId,
+            gate_id: gateMap.gateId,
+            user: link.discordUserId,
+            wallet: link.walletPubkey,
             result: "error",
             reason,
             trigger: options.trigger
