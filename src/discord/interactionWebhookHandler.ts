@@ -132,6 +132,7 @@ export class InteractionWebhookHandler {
     const gateId = getOptionString(options, "gate_id");
     const guildId = getOptionString(options, "guild_id");
     const passRoleId = getOptionString(options, "pass_role_id");
+    const daoId = getOptionString(options, "dao_id");
     const failActionRaw = getOptionString(options, "fail_action");
 
     if (!gateId || !guildId || !passRoleId) {
@@ -139,11 +140,14 @@ export class InteractionWebhookHandler {
     }
 
     const hints = await this.manifestService.getHints(gateId);
+    const onchainDaoId = daoId ? undefined : await this.accessClient.getGateDaoId(gateId);
+    const resolvedDaoId = daoId ?? onchainDaoId ?? hints.daoId;
     const failAction = (failActionRaw as FailAction | undefined) ?? hints.integrations?.discord?.failAction ?? "none";
 
     this.store.upsertGateMapping({
       guildId,
       gateId,
+      daoId: resolvedDaoId,
       passRoleId,
       failAction,
       enabled: true
@@ -154,8 +158,10 @@ export class InteractionWebhookHandler {
         "Gate mapping saved in memory.",
         `guild_id: ${guildId}`,
         `gate_id: ${gateId}`,
+        `dao_id: ${resolvedDaoId ?? "not_set"}`,
         `pass_role_id: ${passRoleId}`,
         `fail_action: ${failAction}`,
+        `dao_id_source: ${daoId ? "command" : onchainDaoId ? "onchain" : hints.daoId ? "manifest" : "missing"}`,
         `manifest_discord_hints: ${hints.schemaValid ? "present" : "not_found"}`,
         "note: memory-only storage resets on cold starts/deploys"
       ].join("\n")
@@ -180,7 +186,19 @@ export class InteractionWebhookHandler {
     const lines: string[] = ["Verification links:"];
     for (const map of maps) {
       const hints = await this.manifestService.getHints(map.gateId);
-      const daoId = hints.daoId ?? map.gateId;
+      const onchainDaoId = map.daoId ? undefined : await this.accessClient.getGateDaoId(map.gateId);
+      const daoId = map.daoId ?? onchainDaoId ?? hints.daoId;
+
+      if (daoId && map.daoId !== daoId) {
+        this.store.upsertGateMapping({
+          guildId: map.guildId,
+          gateId: map.gateId,
+          daoId,
+          passRoleId: map.passRoleId,
+          failAction: map.failAction,
+          enabled: map.enabled
+        });
+      }
 
       const url = new URL("/access", config.accessFrontendBaseUrl);
       url.searchParams.set("gateId", map.gateId);
@@ -188,8 +206,13 @@ export class InteractionWebhookHandler {
       url.searchParams.set("discordUserId", discordUserId);
 
       lines.push(`gate_id ${map.gateId}: ${url.toString()}`);
-      lines.push(`verification: https://verification.governance.so/dao/${daoId}`);
-      lines.push(`reputation: https://vine.governance.so/dao/${daoId}`);
+      if (daoId) {
+        lines.push(`verification: https://verification.governance.so/dao/${daoId}`);
+        lines.push(`reputation: https://vine.governance.so/dao/${daoId}`);
+      } else {
+        lines.push("verification: DAO_ID missing (set `dao_id` in /setup-gate)");
+        lines.push("reputation: DAO_ID missing (set `dao_id` in /setup-gate)");
+      }
     }
 
     return ephemeralMessage(lines.join("\n"));

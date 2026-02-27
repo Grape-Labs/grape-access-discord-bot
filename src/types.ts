@@ -5,6 +5,7 @@ export type CheckSource = "simulate" | "onchain_write";
 export interface GateMapping {
   guildId: string;
   gateId: string;
+  daoId?: string;
   passRoleId: string;
   failAction: FailAction;
   enabled: boolean;

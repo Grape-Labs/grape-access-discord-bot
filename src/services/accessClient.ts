@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { Connection, Keypair } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { AccessCheckResult, CheckSource } from "../types.js";
@@ -15,6 +15,58 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
   return value as Record<string, unknown>;
+}
+
+function toPublicKey(value: unknown): PublicKey | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (value instanceof PublicKey) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return new PublicKey(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
+    if (value.length !== 32) {
+      return undefined;
+    }
+    try {
+      return new PublicKey(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+
+  const toBase58 = rec.toBase58;
+  if (typeof toBase58 === "function") {
+    try {
+      const maybe = Reflect.apply(toBase58, value, []);
+      if (typeof maybe === "string") {
+        return new PublicKey(maybe);
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (typeof rec.publicKey === "string") {
+    return toPublicKey(rec.publicKey);
+  }
+
+  return undefined;
 }
 
 function getNested(obj: unknown, path: string[]): unknown {
@@ -71,8 +123,13 @@ function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
 
 export class AccessClient {
   private sdkRoot: unknown;
+  private anchorProvider: unknown;
   private readonly connection: Connection;
   private readonly onchainSigner?: Keypair;
+  private readonly accessProgramId = new PublicKey(config.programs.access);
+  private readonly reputationProgramId = new PublicKey(config.programs.reputation);
+  private readonly verificationProgramId = new PublicKey(config.programs.verification);
+  private readonly recoveredDaoIdCache = new Map<string, string>();
 
   constructor() {
     this.connection = new Connection(config.rpcEndpoint, "confirmed");
@@ -108,6 +165,55 @@ export class AccessClient {
     }
   }
 
+  private async getAnchorProvider(): Promise<unknown | undefined> {
+    if (this.anchorProvider) {
+      return this.anchorProvider;
+    }
+
+    try {
+      const anchor = (await import("@coral-xyz/anchor")) as Record<string, unknown>;
+      const AnchorProvider = anchor.AnchorProvider;
+      if (typeof AnchorProvider !== "function") {
+        return undefined;
+      }
+
+      const signer = this.onchainSigner ?? Keypair.generate();
+      const wallet = {
+        publicKey: signer.publicKey,
+        signTransaction: async (tx: unknown) => {
+          const rec = asRecord(tx);
+          const partialSign = rec?.partialSign;
+          if (typeof partialSign === "function") {
+            Reflect.apply(partialSign, tx, [signer]);
+          }
+          return tx;
+        },
+        signAllTransactions: async (txs: unknown[]) => {
+          for (const tx of txs) {
+            const rec = asRecord(tx);
+            const partialSign = rec?.partialSign;
+            if (typeof partialSign === "function") {
+              Reflect.apply(partialSign, tx, [signer]);
+            }
+          }
+          return txs;
+        }
+      };
+
+      this.anchorProvider = Reflect.construct(AnchorProvider, [
+        this.connection,
+        wallet,
+        {
+          commitment: "confirmed",
+          preflightCommitment: "confirmed"
+        }
+      ]);
+      return this.anchorProvider;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async candidateObjects(): Promise<unknown[]> {
     const root = await this.loadSdkRoot();
     const candidates: unknown[] = [root];
@@ -130,6 +236,7 @@ export class AccessClient {
     const constructables = [
       ["AccessClient"],
       ["GrapeAccessClient"],
+      ["GpassClient"],
       ["SDK"],
       ["GrapeAccessSDK"]
     ];
@@ -152,6 +259,17 @@ export class AccessClient {
         ]);
         candidates.push(instance);
       } catch {
+        const anchorProvider = await this.getAnchorProvider();
+        if (anchorProvider) {
+          try {
+            const instance = Reflect.construct(ctor, [anchorProvider, this.accessProgramId]);
+            candidates.push(instance);
+            continue;
+          } catch {
+            // Ignore constructor mismatch and continue.
+          }
+        }
+
         try {
           const instance = Reflect.construct(ctor, [this.connection]);
           candidates.push(instance);
@@ -224,6 +342,201 @@ export class AccessClient {
     throw new Error(`${errorLabel}. Tried SDK methods: ${methodNames.join(", ")}. Details: ${errors.slice(0, 5).join(" | ")}`);
   }
 
+  private async fetchGateObject(gateIdOrAlias: string): Promise<unknown> {
+    const gateId = await this.resolveGateId(gateIdOrAlias);
+    const gatePublicKey = toPublicKey(gateId);
+
+    const argsVariants: unknown[][] = [
+      [{ gateId }],
+      [{ accessId: gateId }],
+      [{ id: gateId }],
+      [gateId]
+    ];
+
+    if (gatePublicKey) {
+      argsVariants.unshift([{ gateId: gatePublicKey }], [{ accessId: gatePublicKey }], [gatePublicKey]);
+    }
+
+    return this.invokeFirst(
+      ["fetchAccess", "fetchGate", "getAccess", "getGate", "fetchAccessById", "gateById", "accessById"],
+      argsVariants,
+      "Unable to fetch gate account"
+    );
+  }
+
+  private extractGateRecord(raw: unknown): Record<string, unknown> | undefined {
+    const rec = asRecord(raw);
+    if (!rec) {
+      return undefined;
+    }
+
+    if ("criteria" in rec || "metadataUri" in rec || "accessId" in rec || "gateId" in rec) {
+      return rec;
+    }
+
+    const account = asRecord(rec.account);
+    if (account) {
+      return account;
+    }
+
+    return rec;
+  }
+
+  private collectNamedPublicKeys(root: unknown, fieldNames: ReadonlySet<string>): PublicKey[] {
+    const out: PublicKey[] = [];
+    const seenObjects = new Set<object>();
+
+    const walk = (value: unknown, depth: number): void => {
+      if (depth > 8 || value === null || value === undefined) {
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          walk(entry, depth + 1);
+        }
+        return;
+      }
+
+      if (typeof value !== "object") {
+        return;
+      }
+
+      const obj = value as object;
+      if (seenObjects.has(obj)) {
+        return;
+      }
+      seenObjects.add(obj);
+
+      const rec = asRecord(value);
+      if (!rec) {
+        return;
+      }
+
+      for (const [k, v] of Object.entries(rec)) {
+        if (fieldNames.has(k)) {
+          const pk = toPublicKey(v);
+          if (pk) {
+            out.push(pk);
+          }
+        }
+        walk(v, depth + 1);
+      }
+    };
+
+    walk(root, 0);
+
+    const deduped = new Map<string, PublicKey>();
+    for (const pk of out) {
+      deduped.set(pk.toBase58(), pk);
+    }
+    return Array.from(deduped.values());
+  }
+
+  private async recoverDaoIdFromSeededAccount(params: {
+    sourcePda: PublicKey;
+    seedPrefix: "config" | "space";
+    programId: PublicKey;
+  }): Promise<string | undefined> {
+    const cacheKey = `${params.seedPrefix}:${params.sourcePda.toBase58()}`;
+    const cached = this.recoveredDaoIdCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const info = await this.connection.getAccountInfo(params.sourcePda, "confirmed");
+    if (!info) {
+      return undefined;
+    }
+
+    const data = info.data;
+    const scanLength = Math.min(data.length, 2048);
+    if (scanLength < 32) {
+      return undefined;
+    }
+
+    for (let i = 0; i <= scanLength - 32; i += 1) {
+      const maybeDaoBytes = data.subarray(i, i + 32);
+
+      let maybeDao: PublicKey;
+      try {
+        maybeDao = new PublicKey(maybeDaoBytes);
+      } catch {
+        continue;
+      }
+
+      const [derived] = PublicKey.findProgramAddressSync(
+        [Buffer.from(params.seedPrefix), maybeDao.toBuffer()],
+        params.programId
+      );
+
+      if (derived.equals(params.sourcePda)) {
+        const daoId = maybeDao.toBase58();
+        this.recoveredDaoIdCache.set(cacheKey, daoId);
+        return daoId;
+      }
+    }
+
+    return undefined;
+  }
+
+  async getGateDaoId(gateIdOrAlias: string): Promise<string | undefined> {
+    const raw = await this.fetchGateObject(gateIdOrAlias);
+    const gate = this.extractGateRecord(raw);
+    if (!gate) {
+      return undefined;
+    }
+
+    const directCandidates = [
+      gate.daoId,
+      gate.dao_id,
+      gate.dao,
+      asRecord(gate.metadata)?.daoId,
+      asRecord(gate.metadata)?.dao_id
+    ];
+
+    for (const candidate of directCandidates) {
+      const pk = toPublicKey(candidate);
+      if (pk) {
+        return pk.toBase58();
+      }
+      if (typeof candidate === "string" && candidate.length > 0) {
+        return candidate;
+      }
+    }
+
+    const criteria = asRecord(gate.criteria) ?? asRecord(asRecord(gate.account)?.criteria);
+    if (!criteria) {
+      return undefined;
+    }
+
+    const vineConfigCandidates = this.collectNamedPublicKeys(criteria, new Set(["vineConfig"]));
+    for (const vineConfig of vineConfigCandidates) {
+      const daoId = await this.recoverDaoIdFromSeededAccount({
+        sourcePda: vineConfig,
+        seedPrefix: "config",
+        programId: this.reputationProgramId
+      });
+      if (daoId) {
+        return daoId;
+      }
+    }
+
+    const grapeSpaceCandidates = this.collectNamedPublicKeys(criteria, new Set(["grapeSpace"]));
+    for (const grapeSpace of grapeSpaceCandidates) {
+      const daoId = await this.recoverDaoIdFromSeededAccount({
+        sourcePda: grapeSpace,
+        seedPrefix: "space",
+        programId: this.verificationProgramId
+      });
+      if (daoId) {
+        return daoId;
+      }
+    }
+
+    return undefined;
+  }
+
   async resolveGateId(gateIdOrAlias: string): Promise<string> {
     const argsVariants = [
       [{ gateId: gateIdOrAlias }],
@@ -260,16 +573,8 @@ export class AccessClient {
   }
 
   async getGateMetadataUri(gateIdOrAlias: string): Promise<string | undefined> {
-    const gateId = await this.resolveGateId(gateIdOrAlias);
-
-    const argsVariants = [[{ gateId }], [{ id: gateId }], [gateId]];
-    const raw = await this.invokeFirst(
-      ["getGate", "fetchGate", "getAccessGate", "gateById"],
-      argsVariants,
-      "Unable to fetch gate metadata"
-    );
-
-    const rec = asRecord(raw);
+    const raw = await this.fetchGateObject(gateIdOrAlias);
+    const rec = this.extractGateRecord(raw);
     if (!rec) {
       return undefined;
     }

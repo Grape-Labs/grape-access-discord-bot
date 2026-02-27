@@ -15,6 +15,12 @@ export const commandBuilders = [
     )
     .addStringOption((opt) =>
       opt
+        .setName("dao_id")
+        .setDescription("Governance DAO ID for verification/reputation links")
+        .setRequired(false)
+    )
+    .addStringOption((opt) =>
+      opt
         .setName("fail_action")
         .setDescription("Role action when check fails")
         .setRequired(false)

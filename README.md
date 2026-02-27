@@ -20,9 +20,15 @@ That means state can reset on cold starts, scale events, and deployments.
 
 Use `BOOTSTRAP_GATES_JSON` to pre-load gate mappings each time the runtime starts.
 
+DAO ID resolution for `/verify` links:
+
+- Uses explicit `dao_id` from `/setup-gate` when provided
+- Otherwise attempts on-chain recovery from gate criteria accounts (Vine config / Grape space)
+- Falls back to manifest `daoId` when available
+
 ## Commands
 
-- `/setup-gate gate_id guild_id pass_role_id [fail_action]`
+- `/setup-gate gate_id guild_id pass_role_id [dao_id] [fail_action]`
 - `/verify`
 - `/check user_wallet gate_id`
 - `/sync-gate gate_id [dry_run]`
@@ -42,6 +48,7 @@ Optional:
 - `VERIFY_SHARED_SECRET`
 - `CRON_SECRET`
 - `BOOTSTRAP_GATES_JSON`
+  - Supports optional `daoId` for verification/reputation links.
 
 ## Local dev
 

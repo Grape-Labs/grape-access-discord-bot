@@ -26,6 +26,7 @@ function getState(): InMemoryState {
       gateMappings.set(key(item.guildId, item.gateId), {
         guildId: item.guildId,
         gateId: item.gateId,
+        daoId: item.daoId,
         passRoleId: item.passRoleId,
         failAction: item.failAction ?? "none",
         enabled: item.enabled ?? true,
@@ -51,6 +52,7 @@ export class InMemoryStore {
   upsertGateMapping(params: {
     guildId: string;
     gateId: string;
+    daoId?: string;
     passRoleId: string;
     failAction: FailAction;
     enabled: boolean;
@@ -58,6 +60,7 @@ export class InMemoryStore {
     this.state.gateMappings.set(key(params.guildId, params.gateId), {
       guildId: params.guildId,
       gateId: params.gateId,
+      daoId: params.daoId,
       passRoleId: params.passRoleId,
       failAction: params.failAction,
       enabled: params.enabled,

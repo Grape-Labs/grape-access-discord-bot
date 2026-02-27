@@ -31,6 +31,7 @@ const envSchema = z.object({
 type BootstrapGate = {
   guildId: string;
   gateId: string;
+  daoId?: string;
   passRoleId: string;
   failAction?: FailAction;
   enabled?: boolean;
@@ -60,6 +61,7 @@ function parseBootstrapGates(raw: string | undefined): BootstrapGate[] {
       const rec = item as Record<string, unknown>;
       const guildId = typeof rec.guildId === "string" ? rec.guildId : undefined;
       const gateId = typeof rec.gateId === "string" ? rec.gateId : undefined;
+      const daoId = typeof rec.daoId === "string" ? rec.daoId : undefined;
       const passRoleId = typeof rec.passRoleId === "string" ? rec.passRoleId : undefined;
       if (!guildId || !gateId || !passRoleId) {
         continue;
@@ -68,6 +70,7 @@ function parseBootstrapGates(raw: string | undefined): BootstrapGate[] {
       out.push({
         guildId,
         gateId,
+        daoId,
         passRoleId,
         failAction: rec.failAction === "remove_role" ? "remove_role" : "none",
         enabled: typeof rec.enabled === "boolean" ? rec.enabled : true
