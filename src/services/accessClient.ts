@@ -632,7 +632,8 @@ export class AccessClient {
 
   async getVerifiedWalletForDiscordUser(params: {
     daoId: string;
-    discordUserId: string;
+    discordUserId?: string;
+    identifiers?: string[];
   }): Promise<string | undefined> {
     let mod: Record<string, unknown>;
     try {
@@ -669,17 +670,34 @@ export class AccessClient {
       return undefined;
     }
 
-    const rawUserId = params.discordUserId;
-    const normalizedUserId = rawUserId.trim();
-    const normalizedLower = normalizedUserId.toLowerCase();
-    const hashInputs = [
-      rawUserId,
-      normalizedUserId,
-      normalizedLower,
-      `discord:${rawUserId}`,
-      `discord:${normalizedUserId}`,
-      `discord:${normalizedLower}`
+    const identifiersRaw = [
+      ...(params.identifiers ?? []),
+      ...(params.discordUserId ? [params.discordUserId] : [])
     ];
+
+    const identifiers = Array.from(
+      new Set(
+        identifiersRaw
+          .map((x) => x.trim())
+          .filter((x) => x.length > 0)
+      )
+    );
+
+    if (identifiers.length === 0) {
+      return undefined;
+    }
+
+    const hashInputs = identifiers.flatMap((raw) => {
+      const lower = raw.toLowerCase();
+      return [
+        raw,
+        lower,
+        `discord:${raw}`,
+        `discord:${lower}`,
+        `discord_id:${raw}`,
+        `discord_id:${lower}`
+      ];
+    });
 
     const uniqueHashes = Array.from(
       new Set(hashInputs.map((x) => Buffer.from(sha256Bytes(x)).toString("hex")))

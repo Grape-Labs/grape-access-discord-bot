@@ -29,9 +29,20 @@ interface DiscordInteraction {
   guild_id?: string;
   member?: {
     permissions?: string;
-    user?: { id: string };
+    user?: {
+      id: string;
+      username?: string;
+      global_name?: string | null;
+      discriminator?: string;
+    };
+    nick?: string | null;
   };
-  user?: { id: string };
+  user?: {
+    id: string;
+    username?: string;
+    global_name?: string | null;
+    discriminator?: string;
+  };
   data?: DiscordApplicationCommandData;
 }
 
@@ -81,6 +92,32 @@ function ephemeralMessage(message: string): InteractionResult {
       }
     }
   };
+}
+
+function collectDiscordIdentityCandidates(interaction: DiscordInteraction): string[] {
+  const u = interaction.member?.user ?? interaction.user;
+  const candidatesRaw = [
+    u?.id,
+    u?.username,
+    u?.global_name ?? undefined,
+    interaction.member?.nick ?? undefined
+  ];
+
+  const withDiscriminator =
+    u?.username && u?.discriminator && u.discriminator !== "0"
+      ? `${u.username}#${u.discriminator}`
+      : undefined;
+  if (withDiscriminator) {
+    candidatesRaw.push(withDiscriminator);
+  }
+
+  return Array.from(
+    new Set(
+      candidatesRaw
+        .map((x) => (x ?? "").trim())
+        .filter((x) => x.length > 0)
+    )
+  );
 }
 
 export class InteractionWebhookHandler {
@@ -231,11 +268,16 @@ export class InteractionWebhookHandler {
       return ephemeralMessage("No enabled gate mappings found for this guild. Run /setup-gate first.");
     }
 
+    const identityCandidates = collectDiscordIdentityCandidates(interaction);
+
     let latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
     if (!latestLink) {
+      const lookupNotes: string[] = [];
+
       for (const map of maps) {
         const onchainDaoId = map.daoId ?? (await this.accessClient.getGateDaoId(map.gateId));
         if (!onchainDaoId) {
+          lookupNotes.push(`gate ${map.gateId}: dao_id unresolved`);
           continue;
         }
 
@@ -252,7 +294,8 @@ export class InteractionWebhookHandler {
 
         const walletFromVerification = await this.accessClient.getVerifiedWalletForDiscordUser({
           daoId: onchainDaoId,
-          discordUserId
+          discordUserId,
+          identifiers: identityCandidates
         });
 
         if (walletFromVerification) {
@@ -266,6 +309,20 @@ export class InteractionWebhookHandler {
           latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
           break;
         }
+
+        lookupNotes.push(`gate ${map.gateId}: no verification link match for dao ${onchainDaoId}`);
+      }
+
+      if (!latestLink && lookupNotes.length > 0) {
+        logger.warn(
+          {
+            guild_id: guildId,
+            user: discordUserId,
+            identities: identityCandidates,
+            lookup_notes: lookupNotes
+          },
+          "On-chain verification lookup did not find wallet"
+        );
       }
     }
 
@@ -274,7 +331,7 @@ export class InteractionWebhookHandler {
         [
           "No linked wallet found for your Discord user.",
           "Run /verify and complete verification first so the bot can read your latest verified wallet.",
-          "If already verified on-chain, ensure dao_id can be resolved for this gate."
+          "If already verified on-chain, ensure dao_id can be resolved for this gate and the Discord identity hash matches."
         ].join("\n")
       );
     }
