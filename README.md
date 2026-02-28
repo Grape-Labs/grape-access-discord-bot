@@ -25,7 +25,7 @@ DAO ID resolution for `/verify` links:
 
 ## Commands
 
-- `/setup-gate gate_id guild_id pass_role_id [dao_id] [fail_action]`
+- `/setup-gate gate_id pass_role_id [guild_id] [dao_id] [fail_action]`
 - `/verify`
 - `/check`
 - `/sync-gate gate_id [dry_run]`

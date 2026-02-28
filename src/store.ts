@@ -110,6 +110,10 @@ export class InMemoryStore {
     this.keyPrefix = config.kvKeyPrefix;
   }
 
+  isKvEnabled(): boolean {
+    return this.useKv;
+  }
+
   private withPrefix(...parts: string[]): string {
     return [this.keyPrefix, ...parts].join(":");
   }

@@ -167,13 +167,26 @@ export class InteractionWebhookHandler {
 
     const options = interaction.data?.options;
     const gateId = getOptionString(options, "gate_id");
-    const guildId = getOptionString(options, "guild_id");
+    const providedGuildId = getOptionString(options, "guild_id");
+    const interactionGuildId = interaction.guild_id;
+    const guildId = interactionGuildId ?? providedGuildId;
     const passRoleId = getOptionString(options, "pass_role_id");
     const daoId = getOptionString(options, "dao_id");
     const failActionRaw = getOptionString(options, "fail_action");
 
+    if (interactionGuildId && providedGuildId && providedGuildId !== interactionGuildId) {
+      return ephemeralMessage(
+        [
+          "guild_id option does not match this server.",
+          `guild_id_option: ${providedGuildId}`,
+          `interaction_guild_id: ${interactionGuildId}`,
+          "Use this server's guild ID, or leave guild_id empty."
+        ].join("\n")
+      );
+    }
+
     if (!gateId || !guildId || !passRoleId) {
-      return ephemeralMessage("Missing required options: gate_id, guild_id, pass_role_id.");
+      return ephemeralMessage("Missing required options: gate_id, pass_role_id (and guild_id if used in DMs).");
     }
 
     const hints = await this.manifestService.getHints(gateId);
@@ -200,7 +213,7 @@ export class InteractionWebhookHandler {
         `fail_action: ${failAction}`,
         `dao_id_source: ${daoId ? "command" : onchainDaoId ? "onchain" : hints.daoId ? "manifest" : "missing"}`,
         `manifest_discord_hints: ${hints.schemaValid ? "present" : "not_found"}`,
-        "note: mapping is persisted in KV"
+        `storage_mode: ${this.store.isKvEnabled() ? "kv" : "memory"}`
       ].join("\n")
     );
   }
@@ -265,7 +278,14 @@ export class InteractionWebhookHandler {
 
     const maps = await this.store.listEnabledGateMappings(guildId);
     if (maps.length === 0) {
-      return ephemeralMessage("No enabled gate mappings found for this guild. Run /setup-gate first.");
+      const globalMappings = await this.store.listEnabledGateMappings();
+      return ephemeralMessage(
+        [
+          "No enabled gate mappings found for this guild. Run /setup-gate first.",
+          `guild_id: ${guildId}`,
+          `enabled_mappings_global: ${globalMappings.length}`
+        ].join("\n")
+      );
     }
 
     const identityCandidates = collectDiscordIdentityCandidates(interaction);

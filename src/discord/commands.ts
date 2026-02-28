@@ -8,10 +8,13 @@ export const commandBuilders = [
       opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
     )
     .addStringOption((opt) =>
-      opt.setName("guild_id").setDescription("Discord guild ID").setRequired(true)
+      opt.setName("pass_role_id").setDescription("Role ID to assign on pass").setRequired(true)
     )
     .addStringOption((opt) =>
-      opt.setName("pass_role_id").setDescription("Role ID to assign on pass").setRequired(true)
+      opt
+        .setName("guild_id")
+        .setDescription("Discord guild ID (optional in-server; auto-detected)")
+        .setRequired(false)
     )
     .addStringOption((opt) =>
       opt
