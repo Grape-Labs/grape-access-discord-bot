@@ -37,7 +37,18 @@ function gateIndexMember(guildId: string, gateId: string): string {
   return JSON.stringify([guildId, gateId]);
 }
 
-function parseGateIndexMember(raw: string): { guildId: string; gateId: string } | undefined {
+function parseGateIndexMember(raw: unknown): { guildId: string; gateId: string } | undefined {
+  if (Array.isArray(raw) && raw.length === 2) {
+    const [guildId, gateId] = raw;
+    if (typeof guildId === "string" && typeof gateId === "string") {
+      return { guildId, gateId };
+    }
+  }
+
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed) || parsed.length !== 2) {
@@ -53,6 +64,16 @@ function parseGateIndexMember(raw: string): { guildId: string; gateId: string } 
   } catch {
     return undefined;
   }
+}
+
+function parseDiscordUserId(raw: unknown): string | undefined {
+  if (typeof raw === "string" && raw.length > 0) {
+    return raw;
+  }
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return String(raw);
+  }
+  return undefined;
 }
 
 function newerOrEqual(a: string, b: string): boolean {
@@ -265,7 +286,7 @@ export class InMemoryStore {
     await this.ensureBootstrapped();
 
     if (this.useKv) {
-      const members = await kv.smembers<string[]>(this.gateIndexKey());
+      const members = await kv.smembers<unknown[]>(this.gateIndexKey());
       if (!Array.isArray(members) || members.length === 0) {
         return [];
       }
@@ -361,8 +382,15 @@ export class InMemoryStore {
     await this.ensureBootstrapped();
 
     if (this.useKv) {
-      const userIds = await kv.smembers<string[]>(this.guildUsersKey(guildId));
-      if (!Array.isArray(userIds) || userIds.length === 0) {
+      const userIdsRaw = await kv.smembers<unknown[]>(this.guildUsersKey(guildId));
+      if (!Array.isArray(userIdsRaw) || userIdsRaw.length === 0) {
+        return [];
+      }
+
+      const userIds = userIdsRaw
+        .map((item) => parseDiscordUserId(item))
+        .filter((item): item is string => Boolean(item));
+      if (userIds.length === 0) {
         return [];
       }
 
