@@ -213,7 +213,12 @@ export class InteractionWebhookHandler {
         `fail_action: ${failAction}`,
         `dao_id_source: ${daoId ? "command" : onchainDaoId ? "onchain" : hints.daoId ? "manifest" : "missing"}`,
         `manifest_discord_hints: ${hints.schemaValid ? "present" : "not_found"}`,
-        `storage_mode: ${this.store.isKvEnabled() ? "kv" : "memory"}`
+        `storage_mode: ${this.store.getStorageMode()}`,
+        `storage_missing_kv_env: ${
+          this.store.getMissingKvEnvVars().length > 0
+            ? this.store.getMissingKvEnvVars().join(",")
+            : "none"
+        }`
       ].join("\n")
     );
   }
@@ -228,8 +233,15 @@ export class InteractionWebhookHandler {
 
     const maps = await this.store.listEnabledGateMappings(guildId);
     if (maps.length === 0) {
+      const storageMode = this.store.getStorageMode();
+      const missingKvEnv = this.store.getMissingKvEnvVars();
       return ephemeralMessage(
-        "No gates configured for this guild. Run /setup-gate or set BOOTSTRAP_GATES_JSON."
+        [
+          "No gates configured for this guild. Run /setup-gate or set BOOTSTRAP_GATES_JSON.",
+          `guild_id: ${guildId}`,
+          `storage_mode: ${storageMode}`,
+          `storage_missing_kv_env: ${missingKvEnv.length > 0 ? missingKvEnv.join(",") : "none"}`
+        ].join("\n")
       );
     }
 
@@ -279,11 +291,15 @@ export class InteractionWebhookHandler {
     const maps = await this.store.listEnabledGateMappings(guildId);
     if (maps.length === 0) {
       const globalMappings = await this.store.listEnabledGateMappings();
+      const storageMode = this.store.getStorageMode();
+      const missingKvEnv = this.store.getMissingKvEnvVars();
       return ephemeralMessage(
         [
           "No enabled gate mappings found for this guild. Run /setup-gate first.",
           `guild_id: ${guildId}`,
-          `enabled_mappings_global: ${globalMappings.length}`
+          `enabled_mappings_global: ${globalMappings.length}`,
+          `storage_mode: ${storageMode}`,
+          `storage_missing_kv_env: ${missingKvEnv.length > 0 ? missingKvEnv.join(",") : "none"}`
         ].join("\n")
       );
     }

@@ -100,18 +100,34 @@ function parseJob(raw: unknown): SyncJob | undefined {
 export class InMemoryStore {
   private readonly state = getMemoryState();
   private readonly useKv: boolean;
+  private readonly missingKvEnvVars: string[];
   private readonly keyPrefix: string;
   private bootstrapPromise?: Promise<void>;
 
   constructor() {
     const hasKvUrl = Boolean(process.env.KV_REST_API_URL);
     const hasKvWriteToken = Boolean(process.env.KV_REST_API_TOKEN);
+    this.missingKvEnvVars = [];
+    if (!hasKvUrl) {
+      this.missingKvEnvVars.push("KV_REST_API_URL");
+    }
+    if (!hasKvWriteToken) {
+      this.missingKvEnvVars.push("KV_REST_API_TOKEN");
+    }
     this.useKv = hasKvUrl && hasKvWriteToken;
     this.keyPrefix = config.kvKeyPrefix;
   }
 
   isKvEnabled(): boolean {
     return this.useKv;
+  }
+
+  getStorageMode(): "kv" | "memory" {
+    return this.useKv ? "kv" : "memory";
+  }
+
+  getMissingKvEnvVars(): string[] {
+    return this.missingKvEnvVars.slice();
   }
 
   private withPrefix(...parts: string[]): string {
