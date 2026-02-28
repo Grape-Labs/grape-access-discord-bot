@@ -202,6 +202,8 @@ export class InteractionWebhookHandler {
       failAction,
       enabled: true
     });
+    const readBack = await this.store.getGateMapping(guildId, gateId);
+    const enabledInGuild = await this.store.listEnabledGateMappings(guildId);
 
     return ephemeralMessage(
       [
@@ -218,7 +220,9 @@ export class InteractionWebhookHandler {
           this.store.getMissingKvEnvVars().length > 0
             ? this.store.getMissingKvEnvVars().join(",")
             : "none"
-        }`
+        }`,
+        `post_write_readback: ${readBack ? "ok" : "missing"}`,
+        `enabled_mappings_in_guild: ${enabledInGuild.length}`
       ].join("\n")
     );
   }
