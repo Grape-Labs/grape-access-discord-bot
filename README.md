@@ -64,6 +64,13 @@ npm run register-commands
 npm run dev
 ```
 
+## RPC Diagnostics
+
+For direct RPC connectivity diagnostics from your deployed runtime:
+
+- `GET /api/rpc/ping`
+- Optional override: `GET /api/rpc/ping?endpoint=<urlencoded_rpc_endpoint>`
+
 ## Verification callback format
 
 POST `/api/verification/link`
