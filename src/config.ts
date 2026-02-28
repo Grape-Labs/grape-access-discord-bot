@@ -24,6 +24,7 @@ const envSchema = z.object({
   MAX_USERS_PER_SYNC: z.coerce.number().int().positive().default(500),
   RPC_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
   BOOTSTRAP_GATES_JSON: z.string().optional(),
+  KV_KEY_PREFIX: z.string().optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info")
@@ -118,6 +119,7 @@ export const config = {
   maxUsersPerSync: env.MAX_USERS_PER_SYNC,
   rpcRequestTimeoutMs: env.RPC_REQUEST_TIMEOUT_MS,
   bootstrapGates: parseBootstrapGates(env.BOOTSTRAP_GATES_JSON),
+  kvKeyPrefix: env.KV_KEY_PREFIX ?? "grape-access-discord-bot:v1",
   logLevel: env.LOG_LEVEL,
   programs: {
     access: "GPASSzQQF1H8cdj5pUwFkeYEE4VdMQtCrYtUaMXvPz48",

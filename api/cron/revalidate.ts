@@ -35,11 +35,11 @@ export default async function revalidate(req: VercelRequest, res: VercelResponse
     return;
   }
 
-  const jobs = store.drainSyncJobs(config.maxSyncJobsPerCron);
+  const jobs = await store.drainSyncJobs(config.maxSyncJobsPerCron);
   const jobResults: Array<Record<string, unknown>> = [];
 
   for (const job of jobs) {
-    const gateMap = store.getGateMapping(job.guildId, job.gateId);
+    const gateMap = await store.getGateMapping(job.guildId, job.gateId);
     if (!gateMap || !gateMap.enabled) {
       jobResults.push({
         jobId: job.id,

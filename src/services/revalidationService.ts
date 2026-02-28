@@ -13,7 +13,7 @@ export class RevalidationService {
 
   async runOnce(): Promise<{ processed: number; errors: number }> {
     const now = Date.now();
-    const gateMaps = this.store.listEnabledGateMappings();
+    const gateMaps = await this.store.listEnabledGateMappings();
 
     let processed = 0;
     let errors = 0;
@@ -21,13 +21,13 @@ export class RevalidationService {
     for (const gateMap of gateMaps) {
       const hints = await this.manifestService.getHints(gateMap.gateId);
       const gateIntervalSec = hints.revalidation?.intervalSeconds ?? config.defaultRecheckIntervalSec;
-      const lastRun = this.store.getLastWorkerRunMs(gateMap.guildId, gateMap.gateId);
+      const lastRun = await this.store.getLastWorkerRunMs(gateMap.guildId, gateMap.gateId);
 
       if (now - lastRun < gateIntervalSec * 1000) {
         continue;
       }
 
-      this.store.setLastWorkerRunMs(gateMap.guildId, gateMap.gateId, now);
+      await this.store.setLastWorkerRunMs(gateMap.guildId, gateMap.gateId, now);
 
       try {
         const summary = await this.gateSyncService.syncGate(gateMap, {

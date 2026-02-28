@@ -73,7 +73,7 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
     return;
   }
 
-  store.addWalletLink({
+  await store.addWalletLink({
     discordUserId: body.discordUserId,
     walletPubkey: body.walletPubkey,
     guildId: body.guildId,
@@ -82,8 +82,10 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
   });
 
   const mappings = body.gateId
-    ? [store.getGateMapping(body.guildId, body.gateId)].filter((x): x is NonNullable<typeof x> => Boolean(x))
-    : store.listEnabledGateMappings(body.guildId);
+    ? [await store.getGateMapping(body.guildId, body.gateId)].filter(
+        (x): x is NonNullable<typeof x> => Boolean(x)
+      )
+    : await store.listEnabledGateMappings(body.guildId);
 
   const syncResults: Array<Record<string, unknown>> = [];
 

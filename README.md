@@ -1,4 +1,4 @@
-# Grape Access Discord Bot (Vercel, No Database)
+# Grape Access Discord Bot (Vercel + KV)
 
 Discord bot that assigns/removes roles based on Grape Access checks using:
 
@@ -6,19 +6,16 @@ Discord bot that assigns/removes roles based on Grape Access checks using:
 - Verification callback (`/api/verification/link`)
 - Vercel Cron worker (`/api/cron/revalidate`)
 
-## Important limitation
+## State persistence
 
-This version intentionally uses **no database**.
-
-State is in-memory only:
+State is stored in **Vercel KV**:
 
 - Gate mappings from `/setup-gate`
 - User wallet links from `/api/verification/link`
 - Sync jobs from `/sync-gate`
+- Worker last-run timestamps
 
-That means state can reset on cold starts, scale events, and deployments.
-
-Use `BOOTSTRAP_GATES_JSON` to pre-load gate mappings each time the runtime starts.
+Set a `KV_KEY_PREFIX` if you share the same KV instance with other apps.
 
 DAO ID resolution for `/verify` links:
 
@@ -53,6 +50,12 @@ Optional:
 - `DISCORD_COMMAND_GUILD_ID` (faster command updates)
 - `VERIFY_SHARED_SECRET`
 - `CRON_SECRET`
+- `KV_REST_API_URL`
+- `KV_REST_API_TOKEN`
+- `KV_REST_API_READ_ONLY_TOKEN`
+- `KV_URL`
+- `REDIS_URL`
+- `KV_KEY_PREFIX` (default: `grape-access-discord-bot:v1`)
 - `BOOTSTRAP_GATES_JSON`
   - Supports optional `daoId` for verification/reputation links.
 

@@ -181,7 +181,7 @@ export class InteractionWebhookHandler {
     const resolvedDaoId = daoId ?? onchainDaoId ?? hints.daoId;
     const failAction = (failActionRaw as FailAction | undefined) ?? hints.integrations?.discord?.failAction ?? "none";
 
-    this.store.upsertGateMapping({
+    await this.store.upsertGateMapping({
       guildId,
       gateId,
       daoId: resolvedDaoId,
@@ -192,7 +192,7 @@ export class InteractionWebhookHandler {
 
     return ephemeralMessage(
       [
-        "Gate mapping saved in memory.",
+        "Gate mapping saved.",
         `guild_id: ${guildId}`,
         `gate_id: ${gateId}`,
         `dao_id: ${resolvedDaoId ?? "not_set"}`,
@@ -200,7 +200,7 @@ export class InteractionWebhookHandler {
         `fail_action: ${failAction}`,
         `dao_id_source: ${daoId ? "command" : onchainDaoId ? "onchain" : hints.daoId ? "manifest" : "missing"}`,
         `manifest_discord_hints: ${hints.schemaValid ? "present" : "not_found"}`,
-        "note: memory-only storage resets on cold starts/deploys"
+        "note: mapping is persisted in KV"
       ].join("\n")
     );
   }
@@ -213,7 +213,7 @@ export class InteractionWebhookHandler {
       return ephemeralMessage("This command must be run in a server.");
     }
 
-    const maps = this.store.listEnabledGateMappings(guildId);
+    const maps = await this.store.listEnabledGateMappings(guildId);
     if (maps.length === 0) {
       return ephemeralMessage(
         "No gates configured for this guild. Run /setup-gate or set BOOTSTRAP_GATES_JSON."
@@ -227,7 +227,7 @@ export class InteractionWebhookHandler {
       const daoId = map.daoId ?? onchainDaoId ?? hints.daoId;
 
       if (daoId && map.daoId !== daoId) {
-        this.store.upsertGateMapping({
+        await this.store.upsertGateMapping({
           guildId: map.guildId,
           gateId: map.gateId,
           daoId,
@@ -263,14 +263,14 @@ export class InteractionWebhookHandler {
       return ephemeralMessage("This command must be run in a server.");
     }
 
-    const maps = this.store.listEnabledGateMappings(guildId);
+    const maps = await this.store.listEnabledGateMappings(guildId);
     if (maps.length === 0) {
       return ephemeralMessage("No enabled gate mappings found for this guild. Run /setup-gate first.");
     }
 
     const identityCandidates = collectDiscordIdentityCandidates(interaction);
 
-    let latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
+    let latestLink = await this.store.getLatestWalletLink(discordUserId, guildId);
     if (!latestLink) {
       const lookupNotes: string[] = [];
 
@@ -282,7 +282,7 @@ export class InteractionWebhookHandler {
         }
 
         if (map.daoId !== onchainDaoId) {
-          this.store.upsertGateMapping({
+          await this.store.upsertGateMapping({
             guildId: map.guildId,
             gateId: map.gateId,
             daoId: onchainDaoId,
@@ -299,14 +299,14 @@ export class InteractionWebhookHandler {
         });
 
         if (walletFromVerification) {
-          this.store.addWalletLink({
+          await this.store.addWalletLink({
             discordUserId,
             guildId,
             walletPubkey: walletFromVerification,
             source: "onchain_verification_lookup"
           });
 
-          latestLink = this.store.getLatestWalletLink(discordUserId, guildId);
+          latestLink = await this.store.getLatestWalletLink(discordUserId, guildId);
           break;
         }
 
@@ -356,7 +356,7 @@ export class InteractionWebhookHandler {
           }
         );
 
-        this.store.addCheckResult({
+        await this.store.addCheckResult({
           guildId,
           discordUserId,
           walletPubkey: wallet,
@@ -395,7 +395,7 @@ export class InteractionWebhookHandler {
         failedCount += 1;
         lines.push(`gate ${map.gateId}: ERROR (${reason})`);
 
-        this.store.addCheckResult({
+        await this.store.addCheckResult({
           guildId,
           discordUserId,
           walletPubkey: wallet,
@@ -450,12 +450,12 @@ export class InteractionWebhookHandler {
       return ephemeralMessage("Missing required option: gate_id.");
     }
 
-    const gateMap = this.store.getGateMapping(guildId, gateId);
+    const gateMap = await this.store.getGateMapping(guildId, gateId);
     if (!gateMap || !gateMap.enabled) {
       return ephemeralMessage(`No enabled mapping found for gate ${gateId} in this guild.`);
     }
 
-    const job = this.store.enqueueSyncJob({
+    const job = await this.store.enqueueSyncJob({
       guildId,
       gateId,
       requestedBy,

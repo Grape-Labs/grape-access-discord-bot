@@ -105,7 +105,7 @@ export class GateSyncService {
 
     const hints = await this.manifestService.getHints(gateMap.gateId);
 
-    let links = this.store.listLatestWalletLinksForGuild(gateMap.guildId);
+    let links = await this.store.listLatestWalletLinksForGuild(gateMap.guildId);
     if (options.singleDiscordUserId) {
       links = links.filter((item) => item.discordUserId === options.singleDiscordUserId);
     }
@@ -176,7 +176,7 @@ export class GateSyncService {
           summary.roleRemoved += 1;
         }
 
-        this.store.addCheckResult({
+        await this.store.addCheckResult({
           discordUserId: link.discordUserId,
           guildId: gateMap.guildId,
           walletPubkey: link.walletPubkey,
@@ -210,7 +210,7 @@ export class GateSyncService {
         summary.errors += 1;
         const reason = String(err);
 
-        this.store.addCheckResult({
+        await this.store.addCheckResult({
           discordUserId: link.discordUserId,
           guildId: gateMap.guildId,
           walletPubkey: link.walletPubkey,
