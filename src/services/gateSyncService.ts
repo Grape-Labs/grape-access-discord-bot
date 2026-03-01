@@ -121,6 +121,12 @@ export class GateSyncService {
         continue;
       }
 
+      const identityOverride = await this.store.getIdentityOverride(
+        gateMap.guildId,
+        gateMap.gateId,
+        link.discordUserId
+      );
+
       summary.checked += 1;
 
       try {
@@ -133,7 +139,9 @@ export class GateSyncService {
               discordUserId: link.discordUserId,
               identifiers: [link.discordUserId],
               verificationDaoId: gateMap.verificationDaoId ?? gateMap.daoId,
-              reputationDaoId: gateMap.reputationDaoId ?? gateMap.daoId
+              reputationDaoId: gateMap.reputationDaoId ?? gateMap.daoId,
+              identityAccountOverride: identityOverride?.identityAccount,
+              linkAccountOverride: identityOverride?.linkAccount
             }),
           {
             maxAttempts: 4,
@@ -190,6 +198,14 @@ export class GateSyncService {
           reason: result.reason,
           proof: {
             ...(result.proof ?? {}),
+            identityOverride: identityOverride
+              ? {
+                  identityAccount: identityOverride.identityAccount,
+                  linkAccount: identityOverride.linkAccount,
+                  source: identityOverride.source,
+                  updatedAt: identityOverride.updatedAt
+                }
+              : undefined,
             verifiedAt: link.verifiedAt,
             manifestSchemaValid: hints.schemaValid
           }

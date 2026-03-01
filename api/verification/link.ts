@@ -7,6 +7,7 @@ import { AccessClient } from "../../src/services/accessClient.js";
 import { ManifestService } from "../../src/services/manifestService.js";
 import { GateSyncService } from "../../src/services/gateSyncService.js";
 import { DiscordRestClient } from "../../src/services/discordRestClient.js";
+import type { GateMapping } from "../../src/types.js";
 
 type CallbackPayload = {
   discordUserId?: string;
@@ -284,19 +285,93 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
     : await store.listEnabledGateMappings(guildId);
 
   const uniqueMappings = new Map(mappings.map((m) => [m.gateId, m]));
-  const mappingsToSync = Array.from(uniqueMappings.values());
+  const mappingsToSync: GateMapping[] = [];
+
+  for (const map of uniqueMappings.values()) {
+    const hints = await manifestService.getHints(map.gateId);
+    const needsOnchainLookup = !map.verificationDaoId || !map.reputationDaoId || !map.daoId;
+    const onchainDaoIds = needsOnchainLookup ? await accessClient.getGateDaoIds(map.gateId) : {};
+    const verificationDaoId =
+      map.verificationDaoId ?? map.daoId ?? onchainDaoIds.verificationDaoId ?? onchainDaoIds.daoId ?? hints.daoId;
+    const reputationDaoId =
+      map.reputationDaoId ?? map.daoId ?? onchainDaoIds.reputationDaoId ?? onchainDaoIds.daoId ?? hints.daoId;
+    const daoId = map.daoId ?? onchainDaoIds.daoId ?? verificationDaoId ?? reputationDaoId;
+
+    let syncMap = map;
+    if (
+      verificationDaoId !== map.verificationDaoId ||
+      reputationDaoId !== map.reputationDaoId ||
+      daoId !== map.daoId
+    ) {
+      await store.upsertGateMapping({
+        guildId: map.guildId,
+        gateId: map.gateId,
+        verificationDaoId,
+        reputationDaoId,
+        daoId,
+        passRoleId: map.passRoleId,
+        failAction: map.failAction,
+        enabled: map.enabled
+      });
+
+      syncMap = {
+        ...map,
+        verificationDaoId,
+        reputationDaoId,
+        daoId
+      };
+    }
+
+    mappingsToSync.push(syncMap);
+  }
 
   const syncResults: Array<Record<string, unknown>> = [];
+  const appliedIdentityOverrides: Array<Record<string, unknown>> = [];
 
-  if (payload.identityPda && mappingsToSync.length > 0) {
+  if (mappingsToSync.length > 0) {
     for (const map of mappingsToSync) {
+      let identityPda = payload.identityPda;
+      let linkPda = payload.linkPda;
+      let overrideSource = payload.source ?? "verification_callback";
+
+      if (!identityPda) {
+        const debug = await accessClient.debugIdentityResolution({
+          gateId: map.gateId,
+          walletPubkey: payload.walletPubkey,
+          discordUserId: payload.discordUserId,
+          identifiers: [payload.discordUserId],
+          verificationDaoId: map.verificationDaoId ?? map.daoId
+        });
+
+        identityPda =
+          debug.fromIdentifiers?.identityAccount ??
+          debug.fromWalletFallback?.identityAccount ??
+          debug.verificationStatus?.identityPda;
+        linkPda = debug.fromIdentifiers?.linkAccount ?? debug.fromWalletFallback?.linkAccount ?? linkPda;
+        overrideSource = "verification_callback:auto_identity_resolution";
+      }
+
+      if (!identityPda || !isValidPubkey(identityPda)) {
+        continue;
+      }
+      if (linkPda && !isValidPubkey(linkPda)) {
+        linkPda = undefined;
+      }
+
       await store.upsertIdentityOverride({
         guildId,
         gateId: map.gateId,
         discordUserId: payload.discordUserId,
-        identityAccount: payload.identityPda,
-        linkAccount: payload.linkPda,
-        source: payload.source ?? "verification_callback"
+        identityAccount: identityPda,
+        linkAccount: linkPda,
+        source: overrideSource
+      });
+
+      appliedIdentityOverrides.push({
+        gateId: map.gateId,
+        identityPda,
+        linkPda: linkPda ?? null,
+        source: overrideSource
       });
     }
   }
@@ -325,6 +400,7 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
       wallet: payload.walletPubkey,
       identity_pda: payload.identityPda,
       link_pda: payload.linkPda,
+      applied_identity_overrides: appliedIdentityOverrides,
       verified_at: payload.verifiedAt,
       sync_results: syncResults
     },
@@ -337,7 +413,8 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
     gateId: payload.gateId,
     resolvedGateId: resolvedGateId ?? null,
     linkedWallet: payload.walletPubkey,
-    appliedIdentityOverride: Boolean(payload.identityPda && mappingsToSync.length > 0),
+    appliedIdentityOverride: appliedIdentityOverrides.length > 0,
+    appliedIdentityOverrides,
     mappingsSynced: mappingsToSync.map((m) => m.gateId),
     syncResults
   });

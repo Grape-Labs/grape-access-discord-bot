@@ -193,6 +193,13 @@ export class InteractionWebhookHandler {
   }
 
   private async handleLinkWallet(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const canAdmin = hasAnyPermission(interaction.member?.permissions, [PermissionFlagsBits.Administrator]);
+    if (!canAdmin) {
+      return ephemeralMessage(
+        "Administrator permission is required for manual wallet linking. End users should use /verify."
+      );
+    }
+
     const guildId = interaction.guild_id;
     const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
     if (!guildId || !discordUserId) {
@@ -231,6 +238,13 @@ export class InteractionWebhookHandler {
   }
 
   private async handleLinkIdentity(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const canAdmin = hasAnyPermission(interaction.member?.permissions, [PermissionFlagsBits.Administrator]);
+    if (!canAdmin) {
+      return ephemeralMessage(
+        "Administrator permission is required for manual identity linking. End users should use /verify."
+      );
+    }
+
     const guildId = interaction.guild_id;
     const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
     if (!guildId || !discordUserId) {
@@ -311,6 +325,13 @@ export class InteractionWebhookHandler {
   }
 
   private async handleResetMe(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const canAdmin = hasAnyPermission(interaction.member?.permissions, [PermissionFlagsBits.Administrator]);
+    if (!canAdmin) {
+      return ephemeralMessage(
+        "Administrator permission is required for manual reset. End users should use /verify."
+      );
+    }
+
     const guildId = interaction.guild_id;
     const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
     if (!guildId || !discordUserId) {
@@ -473,7 +494,11 @@ export class InteractionWebhookHandler {
       );
     }
 
-    const lines: string[] = ["Access Links:"];
+    const lines: string[] = [
+      "Access Links:",
+      "Complete verification from one link below; callback sync will automatically apply your role.",
+      "/check and manual link commands are admin-only."
+    ];
     for (const map of maps) {
       const hints = await this.manifestService.getHints(map.gateId);
       const needsOnchainLookup = !map.verificationDaoId || !map.reputationDaoId || !map.daoId;
@@ -537,6 +562,13 @@ export class InteractionWebhookHandler {
   }
 
   private async handleCheck(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const canAdmin = hasAnyPermission(interaction.member?.permissions, [PermissionFlagsBits.Administrator]);
+    if (!canAdmin) {
+      return ephemeralMessage(
+        "Administrator permission is required for /check. End users should use /verify and rely on callback auto-sync."
+      );
+    }
+
     const guildId = interaction.guild_id;
     const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
 
@@ -923,6 +955,13 @@ export class InteractionWebhookHandler {
   }
 
   private async handleDebugIdentity(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const canAdmin = hasAnyPermission(interaction.member?.permissions, [PermissionFlagsBits.Administrator]);
+    if (!canAdmin) {
+      return ephemeralMessage(
+        "Administrator permission is required for /debug-identity. End users should use /verify."
+      );
+    }
+
     const guildId = interaction.guild_id;
     const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
     if (!guildId || !discordUserId) {

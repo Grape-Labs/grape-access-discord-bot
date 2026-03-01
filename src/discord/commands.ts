@@ -1,9 +1,15 @@
-import { SlashCommandBuilder } from "discord.js";
+import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
+
+const adminOnlyPermission = PermissionFlagsBits.Administrator;
+const adminOrGuildManagePermission = PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageGuild;
+const moderatorPermissionMask =
+  PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageRoles | PermissionFlagsBits.ModerateMembers;
 
 export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("setup-gate")
     .setDescription("Map a gate to a guild role")
+    .setDefaultMemberPermissions(adminOrGuildManagePermission)
     .addStringOption((opt) =>
       opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
     )
@@ -49,11 +55,13 @@ export const commandBuilders = [
 
   new SlashCommandBuilder()
     .setName("check")
-    .setDescription("Check your linked wallet against configured gate(s)"),
+    .setDescription("Check your linked wallet against configured gate(s)")
+    .setDefaultMemberPermissions(adminOnlyPermission),
 
   new SlashCommandBuilder()
     .setName("debug-identity")
     .setDescription("Debug identity/link account resolution for one gate")
+    .setDefaultMemberPermissions(adminOnlyPermission)
     .addStringOption((opt) =>
       opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
     ),
@@ -61,6 +69,7 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("link-identity")
     .setDescription("Manually set identity/link PDAs for your checks in this guild")
+    .setDefaultMemberPermissions(adminOnlyPermission)
     .addStringOption((opt) =>
       opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
     )
@@ -74,17 +83,20 @@ export const commandBuilders = [
   new SlashCommandBuilder()
     .setName("link-wallet")
     .setDescription("Manually link your wallet for this server (testing)")
+    .setDefaultMemberPermissions(adminOnlyPermission)
     .addStringOption((opt) =>
       opt.setName("wallet").setDescription("Wallet pubkey").setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("reset-me")
-    .setDescription("Reset your wallet link and identity overrides for this server"),
+    .setDescription("Reset your wallet link and identity overrides for this server")
+    .setDefaultMemberPermissions(adminOnlyPermission),
 
   new SlashCommandBuilder()
     .setName("sync-gate")
     .setDescription("Batch sync role assignments for a gate in this guild")
+    .setDefaultMemberPermissions(moderatorPermissionMask)
     .addStringOption((opt) =>
       opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
     )
