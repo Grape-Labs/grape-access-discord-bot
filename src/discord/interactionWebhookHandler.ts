@@ -396,6 +396,31 @@ export class InteractionWebhookHandler {
           "On-chain verification lookup did not find wallet"
         );
 
+        if (anyIdentityFound && config.basicIdentityCheckMode) {
+          const findingByGate = new Map(verificationFindings.map((x) => [x.gateId, x]));
+          const lines: string[] = ["basic_mode: identity_only", "wallet_link: missing"];
+          let passed = 0;
+          let failed = 0;
+
+          for (const map of maps) {
+            const finding = findingByGate.get(map.gateId);
+            const gatePassed = Boolean(finding?.identityFound);
+            if (gatePassed) {
+              passed += 1;
+            } else {
+              failed += 1;
+            }
+
+            lines.push(
+              `gate ${map.gateId}: ${gatePassed ? "PASS" : "FAIL"} (${gatePassed ? "identity_found" : finding?.reason ?? "identity_not_found_or_dao_unresolved"})`
+            );
+          }
+
+          lines.unshift(`summary: pass=${passed} fail=${failed}`);
+          lines.push("note: BASIC_IDENTITY_CHECK_MODE is enabled (wallet-based criteria are not validated).");
+          return ephemeralMessage(lines.join("\n"));
+        }
+
         if (anyIdentityFound) {
           return ephemeralMessage(
             [

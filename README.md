@@ -36,6 +36,7 @@ DAO ID resolution for `/verify` links:
 - Uses your latest linked wallet for this guild
 - Checks all enabled gate mappings for the guild
 - If no local wallet link exists, attempts on-chain Grape Verification lookup via DAO + Discord identity
+- With `BASIC_IDENTITY_CHECK_MODE=true`, falls back to identity-only pass/fail when wallet link is missing
 
 ## Environment variables
 
@@ -51,6 +52,7 @@ Optional:
 - `DISCORD_COMMAND_GUILD_ID` (faster command updates)
 - `VERIFY_SHARED_SECRET`
 - `CRON_SECRET`
+- `BASIC_IDENTITY_CHECK_MODE` (default `true`)
 - `KV_REST_API_URL`
 - `KV_REST_API_TOKEN`
 - `KV_REST_API_READ_ONLY_TOKEN`

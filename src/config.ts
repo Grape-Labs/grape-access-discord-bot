@@ -18,6 +18,7 @@ const envSchema = z.object({
   ACCESS_FRONTEND_BASE_URL: z.string().url(),
   DEFAULT_RECHECK_INTERVAL_SEC: z.coerce.number().int().positive().default(900),
   DRY_RUN_SYNC: z.string().optional(),
+  BASIC_IDENTITY_CHECK_MODE: z.string().optional(),
   VERIFY_SHARED_SECRET: z.string().optional(),
   CRON_SECRET: z.string().optional(),
   MAX_SYNC_JOBS_PER_CRON: z.coerce.number().int().positive().default(3),
@@ -113,6 +114,8 @@ export const config = {
   accessFrontendBaseUrl: env.ACCESS_FRONTEND_BASE_URL,
   defaultRecheckIntervalSec: env.DEFAULT_RECHECK_INTERVAL_SEC,
   dryRunSync: parseBool(env.DRY_RUN_SYNC),
+  basicIdentityCheckMode:
+    env.BASIC_IDENTITY_CHECK_MODE === undefined ? true : parseBool(env.BASIC_IDENTITY_CHECK_MODE),
   verifySharedSecret: env.VERIFY_SHARED_SECRET,
   cronSecret: env.CRON_SECRET,
   maxSyncJobsPerCron: env.MAX_SYNC_JOBS_PER_CRON,
