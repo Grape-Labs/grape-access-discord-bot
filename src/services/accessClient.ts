@@ -1161,6 +1161,89 @@ export class AccessClient {
     return {};
   }
 
+  private async deriveLinkAccountForIdentityAndWallet(params: {
+    identityAccount: PublicKey;
+    walletPubkey: string;
+    grapeSpace?: PublicKey;
+    verificationDaoId?: string;
+  }): Promise<PublicKey | undefined> {
+    let gvr: Record<string, unknown>;
+    try {
+      gvr = (await import("@grapenpm/grape-verification-registry")) as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+
+    const deriveSpacePda = gvr.deriveSpacePda;
+    const deriveLinkPda = gvr.deriveLinkPda;
+    const walletHash = gvr.walletHash;
+    if (
+      typeof deriveLinkPda !== "function" ||
+      typeof walletHash !== "function"
+    ) {
+      return undefined;
+    }
+
+    let spacePda: PublicKey | undefined = params.grapeSpace;
+    if (!spacePda && params.verificationDaoId && typeof deriveSpacePda === "function") {
+      try {
+        const daoPk = new PublicKey(params.verificationDaoId);
+        const [derivedSpacePda] = Reflect.apply(deriveSpacePda, gvr, [daoPk]) as [PublicKey, number];
+        spacePda = derivedSpacePda;
+      } catch {
+        return undefined;
+      }
+    }
+    if (!spacePda) {
+      return undefined;
+    }
+
+    let walletPk: PublicKey;
+    try {
+      walletPk = new PublicKey(params.walletPubkey);
+    } catch {
+      return undefined;
+    }
+
+    const spaceInfo = await this.withRpcTimeout("getAccountInfo(space)", () =>
+      this.connection.getAccountInfo(spacePda, "confirmed")
+    );
+    if (!spaceInfo) {
+      return undefined;
+    }
+
+    const salt = parseSpaceSalt(spaceInfo.data);
+    if (!salt) {
+      return undefined;
+    }
+
+    const primaryWalletHash = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
+    const hashCandidates = new Map<string, Uint8Array>();
+    hashCandidates.set(Buffer.from(primaryWalletHash).toString("hex"), primaryWalletHash);
+    for (const candidate of this.walletHashCandidates(walletPk)) {
+      hashCandidates.set(Buffer.from(candidate).toString("hex"), candidate);
+    }
+
+    for (const walletHashBytes of hashCandidates.values()) {
+      try {
+        const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [
+          params.identityAccount,
+          walletHashBytes
+        ]) as [PublicKey, number];
+        const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
+          this.connection.getAccountInfo(linkPda, "confirmed")
+        );
+        if (linkInfo) {
+          return linkPda;
+        }
+      } catch {
+        // Continue.
+      }
+    }
+
+    return undefined;
+  }
+
   async getDiscordVerificationStatus(params: {
     daoId: string;
     discordUserId?: string;
@@ -1637,6 +1720,15 @@ export class AccessClient {
       });
       identityAccount = byWallet.identityAccount ?? identityAccount;
       linkAccount = byWallet.linkAccount ?? linkAccount;
+    }
+    if (needVerification && identityAccount && !linkAccount) {
+      const linkFromIdentity = await this.deriveLinkAccountForIdentityAndWallet({
+        identityAccount,
+        walletPubkey: input.walletPubkey,
+        grapeSpace,
+        verificationDaoId: input.verificationDaoId
+      });
+      linkAccount = linkFromIdentity ?? linkAccount;
     }
 
     const tokenMint = criteria

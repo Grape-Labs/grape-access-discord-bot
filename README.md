@@ -30,6 +30,8 @@ DAO ID resolution for `/verify` links:
 - `/setup-gate gate_id pass_role_id [guild_id] [dao_id] [verification_dao_id] [reputation_dao_id] [fail_action]`
 - `/verify`
 - `/check`
+- `/debug-identity gate_id`
+- `/link-identity gate_id identity_pda [link_pda]`
 - `/link-wallet wallet`
 - `/sync-gate gate_id [dry_run]`
 
@@ -81,20 +83,31 @@ For direct RPC connectivity diagnostics from your deployed runtime:
 
 ## Verification callback format
 
-POST/GET `/api/verification/link` (alias: `/api/discord/callback`)
+POST/GET `/api/verification/link`
+
+Aliases:
+
+- `/api/discord/callback`
+- `/api/verification/add`
+- `/api/verification/verify`
 
 Headers:
 
 - `x-verify-secret: <VERIFY_SHARED_SECRET>` (if configured)
+- `authorization: Bearer <VERIFY_SHARED_SECRET>` (also supported)
 
 JSON body:
 
 - `discordUserId` (required)
 - `walletPubkey` (required)
-- `guildId` (required)
+- `guildId` (required unless `gateId` maps to exactly one configured guild)
 - `gateId` (optional; if set, syncs only that gate)
 - `verifiedAt` (optional)
 - `source` (optional)
+- `identityPda` (optional; stores identity override for mapped gate(s))
+- `linkPda` (optional; stores link override for mapped gate(s))
+
+Snake_case and nested body payload variants are supported (for example: `discord_user_id`, `wallet_pubkey`, `guild_id`, `gate_id`, `identity_pda`, `link_pda`, and nested under `payload`, `data`, `event`, `verification`, `context`, `meta`, or `result`).
 
 GET query aliases supported:
 
@@ -102,6 +115,8 @@ GET query aliases supported:
 - `walletPubkey` or `wallet` or `wallet_pubkey` or `wallet_address` or `address`
 - `guildId` or `guild_id` or `guild`
 - `gateId` or `gate_id`
+- `identityPda` or `identity_pda` or `identityAccount`
+- `linkPda` or `link_pda` or `linkAccount`
 
 ## Program IDs
 
