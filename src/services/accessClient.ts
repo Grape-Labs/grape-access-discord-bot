@@ -920,6 +920,87 @@ export class AccessClient {
     return {};
   }
 
+  private async deriveIdentityAndLinkFromWallet(params: {
+    walletPubkey: string;
+    grapeSpace?: PublicKey;
+    verificationDaoId?: string;
+  }): Promise<{ identityAccount?: PublicKey; linkAccount?: PublicKey }> {
+    let gvr: Record<string, unknown>;
+    try {
+      gvr = (await import("@grapenpm/grape-verification-registry")) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+
+    const deriveSpacePda = gvr.deriveSpacePda;
+    const deriveLinkPda = gvr.deriveLinkPda;
+    const walletHash = gvr.walletHash;
+
+    if (typeof deriveLinkPda !== "function" || typeof walletHash !== "function") {
+      return {};
+    }
+
+    let spacePda: PublicKey | undefined = params.grapeSpace;
+    if (!spacePda && params.verificationDaoId && typeof deriveSpacePda === "function") {
+      try {
+        const daoPk = new PublicKey(params.verificationDaoId);
+        const [derivedSpacePda] = Reflect.apply(deriveSpacePda, gvr, [daoPk]) as [PublicKey, number];
+        spacePda = derivedSpacePda;
+      } catch {
+        return {};
+      }
+    }
+    if (!spacePda) {
+      return {};
+    }
+
+    let walletPk: PublicKey;
+    try {
+      walletPk = new PublicKey(params.walletPubkey);
+    } catch {
+      return {};
+    }
+
+    const spaceInfo = await this.withRpcTimeout("getAccountInfo(space)", () =>
+      this.connection.getAccountInfo(spacePda, "confirmed")
+    );
+    if (!spaceInfo) {
+      return {};
+    }
+
+    const salt = parseSpaceSalt(spaceInfo.data);
+    if (!salt) {
+      return {};
+    }
+    const walletHashBytes = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
+
+    const identities = await this.withRpcTimeout("getProgramAccounts(identity by space)", () =>
+      this.connection.getProgramAccounts(this.verificationProgramId, {
+        filters: [{ memcmp: { offset: 9, bytes: spacePda.toBase58() } }]
+      })
+    );
+
+    for (const identity of identities) {
+      const identityPda = identity.pubkey;
+      try {
+        const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [identityPda, walletHashBytes]) as [PublicKey, number];
+        const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
+          this.connection.getAccountInfo(linkPda, "confirmed")
+        );
+        if (linkInfo) {
+          return {
+            identityAccount: identityPda,
+            linkAccount: linkPda
+          };
+        }
+      } catch {
+        // Keep scanning identities in the same space.
+      }
+    }
+
+    return {};
+  }
+
   async getDiscordVerificationStatus(params: {
     daoId: string;
     discordUserId?: string;
@@ -1366,6 +1447,15 @@ export class AccessClient {
       identityAccount = identityAndLink.identityAccount;
       linkAccount = identityAndLink.linkAccount;
     }
+    if (needVerification && !identityAccount) {
+      const byWallet = await this.deriveIdentityAndLinkFromWallet({
+        walletPubkey: input.walletPubkey,
+        grapeSpace,
+        verificationDaoId: input.verificationDaoId
+      });
+      identityAccount = byWallet.identityAccount ?? identityAccount;
+      linkAccount = byWallet.linkAccount ?? linkAccount;
+    }
 
     const tokenMint = criteria
       ? this.collectNamedPublicKeys(criteria, new Set(["mint"])).at(0)
@@ -1477,6 +1567,62 @@ export class AccessClient {
           passed: false,
           source,
           reason: "gate_check_failed_custom_6002",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6003)) {
+        return {
+          passed: false,
+          source,
+          reason: "reputation_account_required_custom_6003",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6004)) {
+        return {
+          passed: false,
+          source,
+          reason: "identity_account_required_custom_6004",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6005)) {
+        return {
+          passed: false,
+          source,
+          reason: "link_account_required_custom_6005",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6006)) {
+        return {
+          passed: false,
+          source,
+          reason: "token_account_required_custom_6006",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6007)) {
+        return {
+          passed: false,
+          source,
+          reason: "invalid_reputation_account_custom_6007",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6008)) {
+        return {
+          passed: false,
+          source,
+          reason: "invalid_identity_account_custom_6008",
+          proof: proofBase
+        };
+      }
+      if (includesCustomErrorCode(err, 6009)) {
+        return {
+          passed: false,
+          source,
+          reason: "invalid_link_account_custom_6009",
           proof: proofBase
         };
       }
