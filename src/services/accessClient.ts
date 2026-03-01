@@ -813,6 +813,31 @@ export class AccessClient {
     return Array.from(deduped.values());
   }
 
+  private expandDiscordIdentifierCandidates(rawInputs: string[]): string[] {
+    const out = new Set<string>();
+    for (const input of rawInputs) {
+      const raw = input.trim();
+      if (raw.length === 0) {
+        continue;
+      }
+      const lower = raw.toLowerCase();
+      out.add(raw);
+      out.add(lower);
+      out.add(`discord:${raw}`);
+      out.add(`discord:${lower}`);
+      out.add(`discord_id:${raw}`);
+      out.add(`discord_id:${lower}`);
+      out.add(`id:${raw}`);
+      out.add(`id:${lower}`);
+
+      if (/^\d+$/.test(raw)) {
+        out.add(`<@${raw}>`);
+        out.add(`<@!${raw}>`);
+      }
+    }
+    return Array.from(out);
+  }
+
   private async deriveDiscordIdentityAndLinkAccounts(params: {
     walletPubkey: string;
     identifiers: string[];
@@ -883,37 +908,41 @@ export class AccessClient {
 
     const platformSeedRaw = verificationPlatform?.Discord;
     const platformSeed = typeof platformSeedRaw === "number" ? platformSeedRaw : 0;
+    const platformSeeds = Array.from(new Set([platformSeed, 0, 1, 2, 3]));
+    const identifierCandidates = this.expandDiscordIdentifierCandidates(params.identifiers);
     const walletHashBytes = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
 
-    for (const identifier of params.identifiers) {
-      try {
-        const idHash = Reflect.apply(identityHash, gvr, [salt, tagDiscord, identifier]) as Uint8Array;
-        const [identityPda] = Reflect.apply(deriveIdentityPda, gvr, [
-          spacePda,
-          platformSeed,
-          idHash
-        ]) as [PublicKey, number];
-        const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
-          this.connection.getAccountInfo(identityPda, "confirmed")
-        );
-        if (!identityInfo) {
-          continue;
+    for (const identifier of identifierCandidates) {
+      for (const seed of platformSeeds) {
+        try {
+          const idHash = Reflect.apply(identityHash, gvr, [salt, tagDiscord, identifier]) as Uint8Array;
+          const [identityPda] = Reflect.apply(deriveIdentityPda, gvr, [
+            spacePda,
+            seed,
+            idHash
+          ]) as [PublicKey, number];
+          const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
+            this.connection.getAccountInfo(identityPda, "confirmed")
+          );
+          if (!identityInfo) {
+            continue;
+          }
+
+          const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [
+            identityPda,
+            walletHashBytes
+          ]) as [PublicKey, number];
+          const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
+            this.connection.getAccountInfo(linkPda, "confirmed")
+          );
+
+          return {
+            identityAccount: identityPda,
+            linkAccount: linkInfo ? linkPda : undefined
+          };
+        } catch {
+          // Continue.
         }
-
-        const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [
-          identityPda,
-          walletHashBytes
-        ]) as [PublicKey, number];
-        const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
-          this.connection.getAccountInfo(linkPda, "confirmed")
-        );
-
-        return {
-          identityAccount: identityPda,
-          linkAccount: linkInfo ? linkPda : undefined
-        };
-      } catch {
-        // Continue.
       }
     }
 
@@ -1134,9 +1163,7 @@ export class AccessClient {
       ...(params.identifiers ?? []),
       ...(params.discordUserId ? [params.discordUserId] : [])
     ];
-    const identifiers = Array.from(
-      new Set(identifiersRaw.map((x) => x.trim()).filter((x) => x.length > 0))
-    );
+    const identifiers = this.expandDiscordIdentifierCandidates(identifiersRaw);
     if (identifiers.length === 0) {
       return {
         identityFound: false,
