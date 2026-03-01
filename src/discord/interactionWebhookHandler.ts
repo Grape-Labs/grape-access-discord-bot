@@ -1062,6 +1062,7 @@ export class InteractionWebhookHandler {
           roleRemoved: number;
           skippedNoMember: number;
           errors: number;
+          errorReasons: string[];
         }
       | undefined;
     let immediateError: string | undefined;
@@ -1079,7 +1080,8 @@ export class InteractionWebhookHandler {
         roleGranted: summary.roleGranted,
         roleRemoved: summary.roleRemoved,
         skippedNoMember: summary.skippedNoMember,
-        errors: summary.errors
+        errors: summary.errors,
+        errorReasons: summary.errorReasons
       };
     } catch (err) {
       immediateError = String(err);
@@ -1117,6 +1119,9 @@ export class InteractionWebhookHandler {
               `immediate_role_removed: ${immediateSummary.roleRemoved}`,
               `immediate_skipped_no_member: ${immediateSummary.skippedNoMember}`,
               `immediate_errors: ${immediateSummary.errors}`,
+              ...(immediateSummary.errorReasons.length > 0
+                ? [`immediate_error_reasons: ${immediateSummary.errorReasons.join(" | ")}`]
+                : []),
               ...(immediateSummary.checked === 0
                 ? ["hint: no linked wallet found for requesting user in this guild."]
                 : [])

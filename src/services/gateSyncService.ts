@@ -17,6 +17,7 @@ export interface SyncSummary {
   roleRemoved: number;
   skippedNoMember: number;
   errors: number;
+  errorReasons: string[];
   dryRun: boolean;
 }
 
@@ -130,6 +131,7 @@ export class GateSyncService {
       roleRemoved: 0,
       skippedNoMember: 0,
       errors: 0,
+      errorReasons: [],
       dryRun
     };
 
@@ -325,6 +327,9 @@ export class GateSyncService {
       } catch (err) {
         summary.errors += 1;
         const reason = String(err);
+        if (summary.errorReasons.length < 5) {
+          summary.errorReasons.push(reason);
+        }
 
         await this.store.addCheckResult({
           discordUserId: link.discordUserId,
