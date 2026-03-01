@@ -660,6 +660,23 @@ export class InteractionWebhookHandler {
             `identifiers=${identityCandidates.join(",")}`
           ].join(" ");
         }
+        if (!result.passed) {
+          const proof = result.proof as Record<string, unknown> | undefined;
+          const logsRaw = proof?.logs;
+          const logs =
+            Array.isArray(logsRaw)
+              ? logsRaw.filter((entry): entry is string => typeof entry === "string")
+              : [];
+          if (logs.length > 0) {
+            const logHint =
+              logs.find((line) => line.startsWith("Program log:")) ??
+              logs.find((line) => line.startsWith("Program ")) ??
+              logs.at(-1);
+            if (logHint) {
+              reasonText = `${reasonText} log_hint=${logHint}`;
+            }
+          }
+        }
 
         lines.push(
           `gate ${map.gateId}: ${result.passed ? "PASS" : "FAIL"} (${reasonText})`

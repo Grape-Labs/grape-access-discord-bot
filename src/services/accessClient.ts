@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { AccessCheckResult, CheckSource } from "../types.js";
@@ -150,52 +150,40 @@ function toNumberLike(value: unknown): number | undefined {
   return undefined;
 }
 
-function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
-  if (typeof raw === "boolean") {
-    return { passed: raw, source: mode };
+const SPL_TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+function includesCustomErrorCode(value: unknown, code: number): boolean {
+  if (typeof value === "number") {
+    return value === code;
   }
 
-  if (typeof raw === "string" && raw.length > 0) {
-    return {
-      passed: true,
-      source: mode,
-      proof: { tx: raw }
-    };
+  if (Array.isArray(value)) {
+    return value.some((entry) => includesCustomErrorCode(entry, code));
   }
 
-  const rec = asRecord(raw);
+  const rec = asRecord(value);
   if (!rec) {
-    return {
-      passed: false,
-      source: mode,
-      reason: "SDK returned a non-object check response."
-    };
+    return false;
   }
 
-  const passed =
-    typeof rec.passed === "boolean"
-      ? rec.passed
-      : typeof rec.allowed === "boolean"
-        ? rec.allowed
-        : typeof rec.success === "boolean"
-          ? rec.success
-          : false;
+  for (const [k, v] of Object.entries(rec)) {
+    if (k === "Custom" && includesCustomErrorCode(v, code)) {
+      return true;
+    }
+    if (includesCustomErrorCode(v, code)) {
+      return true;
+    }
+  }
 
-  const reason =
-    (typeof rec.reason === "string" && rec.reason) ||
-    (typeof rec.message === "string" && rec.message) ||
-    (typeof rec.error === "string" && rec.error) ||
-    undefined;
+  return false;
+}
 
-  const proofCandidate =
-    asRecord(rec.proof) || asRecord(rec.details) || asRecord(rec.result) || asRecord(rec.meta);
-
-  return {
-    passed,
-    source: mode,
-    reason,
-    proof: proofCandidate
-  };
+function shortError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
 }
 
 export class AccessClient {
@@ -573,6 +561,14 @@ export class AccessClient {
 
     walk(root, 0);
     return out;
+  }
+
+  private deriveAssociatedTokenAccount(owner: PublicKey, mint: PublicKey): PublicKey {
+    const [ata] = PublicKey.findProgramAddressSync(
+      [owner.toBuffer(), SPL_TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    return ata;
   }
 
   private async recoverDaoIdFromSeededAccount(params: {
@@ -1267,17 +1263,7 @@ export class AccessClient {
 
   async checkAccess(input: CheckAccessInput): Promise<AccessCheckResult> {
     const gateId = await this.resolveGateId(input.gateId);
-    const shouldWrite = input.mode === "onchain_write";
-    const source: CheckSource = shouldWrite ? "onchain_write" : "simulate";
-
-    if (shouldWrite && !this.onchainSigner) {
-      return {
-        passed: false,
-        source,
-        reason:
-          "On-chain write mode requested, but ONCHAIN_CHECKER_KEYPAIR_PATH is not configured or invalid."
-      };
-    }
+    const source: CheckSource = "simulate";
 
     let gatePk: PublicKey;
     let walletPk: PublicKey;
@@ -1354,20 +1340,16 @@ export class AccessClient {
       linkAccount = identityAndLink.linkAccount;
     }
 
+    const tokenMint = criteria
+      ? this.collectNamedPublicKeys(criteria, new Set(["mint"])).at(0)
+      : undefined;
+    const tokenAccount = tokenMint ? this.deriveAssociatedTokenAccount(walletPk, tokenMint) : undefined;
+
     const checkParams: Record<string, unknown> = {
       accessId: gatePk,
       gateId: gatePk,
       user: walletPk,
-      wallet: walletPk,
-      walletPubkey: input.walletPubkey,
-      mode: shouldWrite ? "write" : "simulate",
-      write: shouldWrite,
-      writeRecord: shouldWrite,
-      storeRecord: shouldWrite,
-      cluster: config.cluster,
-      connection: this.connection,
-      signer: this.onchainSigner,
-      programs: config.programs
+      storeRecord: false
     };
     if (identityAccount) {
       checkParams.identityAccount = identityAccount;
@@ -1378,62 +1360,128 @@ export class AccessClient {
     if (reputationAccount) {
       checkParams.reputationAccount = reputationAccount;
     }
-
-    const argsVariants = [
-      [checkParams],
-      [{ accessId: gatePk, user: walletPk, storeRecord: shouldWrite }],
-      [{ gateId: gatePk, user: walletPk, storeRecord: shouldWrite }],
-      [gateId, input.walletPubkey, { write: shouldWrite, cluster: config.cluster }],
-      [input.walletPubkey, gateId, { write: shouldWrite, cluster: config.cluster }]
-    ];
-
-    const methodNames = shouldWrite
-      ? ["checkAccess", "checkGate", "checkGateAccess", "check", "canAccess", "evaluateAccess"]
-      : [
-          "simulateCheckAccess",
-          "simulateCheckGate",
-          "checkAccess",
-          "checkGate",
-          "checkGateAccess",
-          "check",
-          "canAccess",
-          "evaluateAccess"
-        ];
-
-    const raw = await this.withRpcTimeout("checkAccess", () =>
-      this.invokeFirst(
-        methodNames,
-        argsVariants,
-        "Access check failed"
-      )
-    );
-
-    const normalized = normalizeResult(raw, source);
-    if (!normalized.passed && !normalized.reason) {
-      if (criteria && grapeSpace && !identityAccount) {
-        normalized.reason = "discord_identity_not_found_for_verification_criteria";
-      } else if (criteria && grapeSpace && identityAccount && !linkAccount) {
-        normalized.reason = "wallet_not_linked_to_verified_discord_identity";
-      } else if (criteria && vineConfig && season !== undefined && !reputationAccount) {
-        normalized.reason = "reputation_account_not_resolved";
-      } else {
-        normalized.reason = "criteria_not_met_or_missing_required_accounts";
-      }
+    if (tokenAccount) {
+      checkParams.tokenAccount = tokenAccount;
     }
-    normalized.proof = {
-      ...(normalized.proof ?? {}),
-      diagnostic: {
-        verificationDaoId: input.verificationDaoId,
-        reputationDaoId: input.reputationDaoId,
-        identifiersTried: identifiers,
-        usedIdentityAccount: identityAccount?.toBase58(),
-        usedLinkAccount: linkAccount?.toBase58(),
-        usedReputationAccount: reputationAccount?.toBase58(),
-        hasVineConfig: Boolean(vineConfig),
-        hasGrapeSpace: Boolean(grapeSpace),
-        season
+
+    let checkInstruction: unknown;
+    try {
+      checkInstruction = await this.withRpcTimeout("buildCheckAccessInstruction", () =>
+        this.invokeFirst(
+          ["buildCheckAccessInstruction", "buildCheckGateInstruction"],
+          [Array.of(checkParams), Array.of({ gateId: gatePk, ...checkParams })],
+          "Access check instruction build failed"
+        )
+      );
+    } catch (err) {
+      return {
+        passed: false,
+        source,
+        reason: `simulation_build_error: ${shortError(err)}`,
+        proof: {
+          diagnostic: {
+            verificationDaoId: input.verificationDaoId,
+            reputationDaoId: input.reputationDaoId,
+            identifiersTried: identifiers,
+            usedIdentityAccount: identityAccount?.toBase58(),
+            usedLinkAccount: linkAccount?.toBase58(),
+            usedReputationAccount: reputationAccount?.toBase58(),
+            usedTokenAccount: tokenAccount?.toBase58(),
+            hasVineConfig: Boolean(vineConfig),
+            hasGrapeSpace: Boolean(grapeSpace),
+            season
+          }
+        }
+      };
+    }
+
+    if (!checkInstruction || typeof checkInstruction !== "object") {
+      return {
+        passed: false,
+        source,
+        reason: "simulation_build_error: sdk returned invalid instruction object"
+      };
+    }
+
+    try {
+      const tx = new Transaction().add(checkInstruction as Parameters<Transaction["add"]>[0]);
+      tx.feePayer = walletPk;
+      const latest = await this.withRpcTimeout("getLatestBlockhash", () =>
+        this.connection.getLatestBlockhash("processed")
+      );
+      tx.recentBlockhash = latest.blockhash;
+
+      const sim = await this.withRpcTimeout("simulateTransaction", () =>
+        this.connection.simulateTransaction(tx, undefined, false)
+      );
+
+      const err = sim.value.err;
+      const logs = sim.value.logs ?? [];
+      const proofBase = {
+        slot: sim.context.slot,
+        logs,
+        err,
+        diagnostic: {
+          requestedMode: input.mode,
+          effectiveMode: "simulate",
+          verificationDaoId: input.verificationDaoId,
+          reputationDaoId: input.reputationDaoId,
+          identifiersTried: identifiers,
+          usedIdentityAccount: identityAccount?.toBase58(),
+          usedLinkAccount: linkAccount?.toBase58(),
+          usedReputationAccount: reputationAccount?.toBase58(),
+          usedTokenAccount: tokenAccount?.toBase58(),
+          hasVineConfig: Boolean(vineConfig),
+          hasGrapeSpace: Boolean(grapeSpace),
+          season
+        }
+      };
+
+      if (err === null) {
+        return {
+          passed: true,
+          source,
+          proof: proofBase
+        };
       }
-    };
-    return normalized;
+
+      if (includesCustomErrorCode(err, 6002)) {
+        return {
+          passed: false,
+          source,
+          reason: "gate_check_failed_custom_6002",
+          proof: proofBase
+        };
+      }
+
+      return {
+        passed: false,
+        source,
+        reason: `simulation_error: ${JSON.stringify(err)}`,
+        proof: proofBase
+      };
+    } catch (err) {
+      return {
+        passed: false,
+        source,
+        reason: `simulation_rpc_error: ${shortError(err)}`,
+        proof: {
+          diagnostic: {
+            requestedMode: input.mode,
+            effectiveMode: "simulate",
+            verificationDaoId: input.verificationDaoId,
+            reputationDaoId: input.reputationDaoId,
+            identifiersTried: identifiers,
+            usedIdentityAccount: identityAccount?.toBase58(),
+            usedLinkAccount: linkAccount?.toBase58(),
+            usedReputationAccount: reputationAccount?.toBase58(),
+            usedTokenAccount: tokenAccount?.toBase58(),
+            hasVineConfig: Boolean(vineConfig),
+            hasGrapeSpace: Boolean(grapeSpace),
+            season
+          }
+        }
+      };
+    }
   }
 }
