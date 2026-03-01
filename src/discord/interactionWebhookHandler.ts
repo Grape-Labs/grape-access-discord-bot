@@ -826,16 +826,37 @@ export class InteractionWebhookHandler {
           }
 
           if (result.reason === "identity_account_required_custom_6004" && verificationDaoId) {
-            lines.push(
-              `action: complete Discord verification with this URL: ${buildAccessUrl({
-                gateId: map.gateId,
-                discordUserId,
-                guildId
-              })}`
-            );
-            lines.push(
-              "action: if you already verified, run /link-identity with your identity PDA (and optional link PDA)."
-            );
+            const verificationStatus = await this.accessClient.getDiscordVerificationStatus({
+              daoId: verificationDaoId,
+              discordUserId,
+              identifiers: identityCandidates
+            });
+            reasonText = [
+              reasonText,
+              `verification_identity_found=${verificationStatus.identityFound}`,
+              `verification_matched_identifier=${verificationStatus.matchedIdentifier ?? "none"}`,
+              `verification_identity_pda=${verificationStatus.identityPda ?? "none"}`
+            ].join(" ");
+
+            if (verificationStatus.identityFound) {
+              lines.push(
+                "action: identity is present on-chain, but bot account derivation did not resolve it for this check."
+              );
+              lines.push(
+                "action: run /link-identity with identity_pda (and link_pda) or ensure callback includes identity/link PDAs."
+              );
+            } else {
+              lines.push(
+                `action: complete Discord verification with this URL: ${buildAccessUrl({
+                  gateId: map.gateId,
+                  discordUserId,
+                  guildId
+                })}`
+              );
+              lines.push(
+                "action: if you already verified, check that your Discord ID (not just username) is the linked identifier."
+              );
+            }
           }
 
           if (result.reason === "invalid_identity_account_custom_6008") {
