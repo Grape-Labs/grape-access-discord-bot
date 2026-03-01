@@ -110,6 +110,19 @@ function buildDiscordVerificationUrl(params: {
   return url.toString();
 }
 
+function buildAccessUrl(params: {
+  gateId: string;
+  guildId: string;
+  discordUserId: string;
+}): string {
+  const url = new URL("/access", config.accessFrontendBaseUrl);
+  url.searchParams.set("gateId", params.gateId);
+  url.searchParams.set("guildId", params.guildId);
+  url.searchParams.set("discordUserId", params.discordUserId);
+  url.searchParams.set("cluster", config.cluster);
+  return url.toString();
+}
+
 function collectDiscordIdentityCandidates(interaction: DiscordInteraction): string[] {
   const u = interaction.member?.user ?? interaction.user;
   const candidatesRaw = [
@@ -496,12 +509,13 @@ export class InteractionWebhookHandler {
         });
       }
 
-      const url = new URL("/access", config.accessFrontendBaseUrl);
-      url.searchParams.set("gateId", map.gateId);
-      url.searchParams.set("guildId", guildId);
-      url.searchParams.set("discordUserId", discordUserId);
-
-      lines.push(`gate_id ${map.gateId}: ${url.toString()}`);
+      lines.push(
+        `gate_id ${map.gateId}: ${buildAccessUrl({
+          gateId: map.gateId,
+          guildId,
+          discordUserId
+        })}`
+      );
       lines.push(
         verificationDaoId
           ? `verification: ${buildDiscordVerificationUrl({
@@ -813,11 +827,10 @@ export class InteractionWebhookHandler {
 
           if (result.reason === "identity_account_required_custom_6004" && verificationDaoId) {
             lines.push(
-              `action: complete Discord verification with this URL: ${buildDiscordVerificationUrl({
-                verificationDaoId,
+              `action: complete Discord verification with this URL: ${buildAccessUrl({
+                gateId: map.gateId,
                 discordUserId,
-                guildId,
-                gateId: map.gateId
+                guildId
               })}`
             );
             lines.push(
