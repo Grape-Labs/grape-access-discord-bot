@@ -1053,6 +1053,48 @@ export class InteractionWebhookHandler {
       return ephemeralMessage(`No enabled mapping found for gate ${gateId} in this guild.`);
     }
 
+    let immediateSummary:
+      | {
+          checked: number;
+          passed: number;
+          failed: number;
+          roleGranted: number;
+          roleRemoved: number;
+          skippedNoMember: number;
+          errors: number;
+        }
+      | undefined;
+    let immediateError: string | undefined;
+    try {
+      const summary = await this.gateSyncService.syncGate(gateMap, {
+        trigger: "command",
+        sourceLabel: "sync_gate_immediate",
+        dryRun,
+        singleDiscordUserId: requestedBy
+      });
+      immediateSummary = {
+        checked: summary.checked,
+        passed: summary.passed,
+        failed: summary.failed,
+        roleGranted: summary.roleGranted,
+        roleRemoved: summary.roleRemoved,
+        skippedNoMember: summary.skippedNoMember,
+        errors: summary.errors
+      };
+    } catch (err) {
+      immediateError = String(err);
+      logger.error(
+        {
+          guild_id: guildId,
+          gate_id: gateId,
+          requested_by: requestedBy,
+          dry_run: dryRun,
+          reason: immediateError
+        },
+        "Immediate sync-gate check failed"
+      );
+    }
+
     const job = await this.store.enqueueSyncJob({
       guildId,
       gateId,
@@ -1062,11 +1104,29 @@ export class InteractionWebhookHandler {
 
     return ephemeralMessage(
       [
-        "Sync job queued.",
+        immediateSummary
+          ? "Immediate sync complete for requesting user."
+          : "Immediate sync failed for requesting user.",
+        `requested_by: ${requestedBy}`,
+        ...(immediateSummary
+          ? [
+              `immediate_checked: ${immediateSummary.checked}`,
+              `immediate_passed: ${immediateSummary.passed}`,
+              `immediate_failed: ${immediateSummary.failed}`,
+              `immediate_role_granted: ${immediateSummary.roleGranted}`,
+              `immediate_role_removed: ${immediateSummary.roleRemoved}`,
+              `immediate_skipped_no_member: ${immediateSummary.skippedNoMember}`,
+              `immediate_errors: ${immediateSummary.errors}`,
+              ...(immediateSummary.checked === 0
+                ? ["hint: no linked wallet found for requesting user in this guild."]
+                : [])
+            ]
+          : [`immediate_error: ${immediateError ?? "unknown_error"}`]),
+        "Batch sync job queued.",
         `job_id: ${job.id}`,
         `gate_id: ${job.gateId}`,
         `dry_run: ${job.dryRun}`,
-        "Cron endpoint /api/cron/revalidate will process this job."
+        "Cron endpoint /api/cron/revalidate will process this full-guild job."
       ].join("\n")
     );
   }
