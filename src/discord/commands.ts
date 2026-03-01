@@ -52,6 +52,13 @@ export const commandBuilders = [
     .setDescription("Check your linked wallet against configured gate(s)"),
 
   new SlashCommandBuilder()
+    .setName("debug-identity")
+    .setDescription("Debug identity/link account resolution for one gate")
+    .addStringOption((opt) =>
+      opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName("link-wallet")
     .setDescription("Manually link your wallet for this server (testing)")
     .addStringOption((opt) =>

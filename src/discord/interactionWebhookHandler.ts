@@ -149,6 +149,8 @@ export class InteractionWebhookHandler {
         return this.handleVerify(interaction);
       case "check":
         return this.handleCheck(interaction);
+      case "debug-identity":
+        return this.handleDebugIdentity(interaction);
       case "link-wallet":
         return this.handleLinkWallet(interaction);
       case "sync-gate":
@@ -726,6 +728,63 @@ export class InteractionWebhookHandler {
 
     lines.unshift(`summary: pass=${passedCount} fail=${failedCount}`);
     return ephemeralMessage(lines.join("\n"));
+  }
+
+  private async handleDebugIdentity(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const guildId = interaction.guild_id;
+    const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
+    if (!guildId || !discordUserId) {
+      return ephemeralMessage("This command must be run in a server.");
+    }
+
+    const gateId = getOptionString(interaction.data?.options, "gate_id");
+    if (!gateId) {
+      return ephemeralMessage("Missing required option: gate_id.");
+    }
+
+    const map = await this.store.getGateMapping(guildId, gateId);
+    if (!map || !map.enabled) {
+      return ephemeralMessage(`No enabled mapping found for gate ${gateId} in this guild.`);
+    }
+
+    const latestLink = await this.store.getLatestWalletLink(discordUserId, guildId);
+    if (!latestLink) {
+      return ephemeralMessage("No linked wallet in KV for your user. Run /verify or /link-wallet first.");
+    }
+
+    const identityCandidates = collectDiscordIdentityCandidates(interaction);
+    const onchainDaoIds =
+      map.verificationDaoId || map.daoId ? {} : await this.accessClient.getGateDaoIds(map.gateId);
+    const verificationDaoId =
+      map.verificationDaoId ?? map.daoId ?? onchainDaoIds.verificationDaoId ?? onchainDaoIds.daoId;
+
+    const debug = await this.accessClient.debugIdentityResolution({
+      gateId: map.gateId,
+      walletPubkey: latestLink.walletPubkey,
+      discordUserId,
+      identifiers: identityCandidates,
+      verificationDaoId
+    });
+
+    return ephemeralMessage(
+      [
+        "Identity debug:",
+        `gate_id: ${debug.gateId}`,
+        `resolved_gate_id: ${debug.resolvedGateId}`,
+        `wallet: ${latestLink.walletPubkey}`,
+        `verification_dao_id: ${debug.verificationDaoId ?? "missing"}`,
+        `grape_space: ${debug.grapeSpace ?? "missing"}`,
+        `identifiers: ${debug.identifiers.join(",") || "none"}`,
+        `expanded_identifiers_count: ${debug.expandedIdentifiers.length}`,
+        `verification_identity_found: ${debug.verificationStatus?.identityFound ?? false}`,
+        `verification_identity_pda: ${debug.verificationStatus?.identityPda ?? "none"}`,
+        `verification_matched_identifier: ${debug.verificationStatus?.matchedIdentifier ?? "none"}`,
+        `from_identifiers.identity: ${debug.fromIdentifiers?.identityAccount ?? "none"}`,
+        `from_identifiers.link: ${debug.fromIdentifiers?.linkAccount ?? "none"}`,
+        `from_wallet_fallback.identity: ${debug.fromWalletFallback?.identityAccount ?? "none"}`,
+        `from_wallet_fallback.link: ${debug.fromWalletFallback?.linkAccount ?? "none"}`
+      ].join("\n")
+    );
   }
 
   private async handleSyncGate(interaction: DiscordInteraction): Promise<InteractionResult> {

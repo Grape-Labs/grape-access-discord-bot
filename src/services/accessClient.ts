@@ -15,6 +15,24 @@ interface CheckAccessInput {
   reputationDaoId?: string;
 }
 
+export interface IdentityDebugResult {
+  gateId: string;
+  resolvedGateId: string;
+  verificationDaoId?: string;
+  grapeSpace?: string;
+  identifiers: string[];
+  expandedIdentifiers: string[];
+  verificationStatus?: DiscordVerificationStatus;
+  fromIdentifiers?: {
+    identityAccount?: string;
+    linkAccount?: string;
+  };
+  fromWalletFallback?: {
+    identityAccount?: string;
+    linkAccount?: string;
+  };
+}
+
 export interface DiscordVerificationStatus {
   identityFound: boolean;
   linksFound: number;
@@ -466,13 +484,67 @@ export class AccessClient {
       argsVariants.unshift([{ gateId: gatePublicKey }], [{ accessId: gatePublicKey }], [gatePublicKey]);
     }
 
-    return this.withRpcTimeout("fetchGateObject", () =>
-      this.invokeFirst(
-        ["fetchAccess", "fetchGate", "getAccess", "getGate", "fetchAccessById", "gateById", "accessById"],
-        argsVariants,
-        "Unable to fetch gate account"
-      )
-    );
+    try {
+      return await this.withRpcTimeout("fetchGateObject", () =>
+        this.invokeFirst(
+          ["fetchAccess", "fetchGate", "getAccess", "getGate", "fetchAccessById", "gateById", "accessById"],
+          argsVariants,
+          "Unable to fetch gate account"
+        )
+      );
+    } catch (err) {
+      const decoded = await this.fetchGateRecordDirect(gateId);
+      if (decoded) {
+        return decoded;
+      }
+      throw err;
+    }
+  }
+
+  private async fetchGateRecordDirect(gateId: string): Promise<Record<string, unknown> | undefined> {
+    try {
+      const mod = (await import("@grapenpm/grape-access-sdk")) as Record<string, unknown>;
+      const findAccessPda = mod.findAccessPda;
+      const idl = mod.IDL;
+      if (typeof findAccessPda !== "function" || !idl) {
+        return undefined;
+      }
+
+      const gatePk = new PublicKey(gateId);
+      const [accessPda] = (await Promise.resolve(
+        Reflect.apply(findAccessPda, mod, [gatePk, this.accessProgramId])
+      )) as [PublicKey, number];
+
+      const info = await this.withRpcTimeout("getAccountInfo(access)", () =>
+        this.connection.getAccountInfo(accessPda, "confirmed")
+      );
+      if (!info) {
+        return undefined;
+      }
+
+      const anchor = (await import("@coral-xyz/anchor")) as Record<string, unknown>;
+      const borshAccountsCoder = anchor.BorshAccountsCoder;
+      if (typeof borshAccountsCoder !== "function") {
+        return undefined;
+      }
+
+      const coder = Reflect.construct(borshAccountsCoder, [idl]) as Record<string, unknown>;
+      const decode = coder.decode;
+      if (typeof decode !== "function") {
+        return undefined;
+      }
+
+      let decoded: unknown;
+      try {
+        decoded = Reflect.apply(decode, coder, ["Access", info.data]);
+      } catch {
+        decoded = Reflect.apply(decode, coder, ["access", info.data]);
+      }
+
+      return asRecord(decoded);
+    } catch {
+      return undefined;
+    }
   }
 
   private extractGateRecord(raw: unknown): Record<string, unknown> | undefined {
@@ -1722,5 +1794,74 @@ export class AccessClient {
         }
       };
     }
+  }
+
+  async debugIdentityResolution(input: {
+    gateId: string;
+    walletPubkey: string;
+    discordUserId?: string;
+    identifiers?: string[];
+    verificationDaoId?: string;
+  }): Promise<IdentityDebugResult> {
+    const resolvedGateId = await this.resolveGateId(input.gateId);
+    const identifiersRaw = [
+      ...(input.identifiers ?? []),
+      ...(input.discordUserId ? [input.discordUserId] : [])
+    ];
+    const identifiers = Array.from(
+      new Set(identifiersRaw.map((x) => x.trim()).filter((x) => x.length > 0))
+    );
+    const expandedIdentifiers = this.expandDiscordIdentifierCandidates(identifiers);
+
+    let grapeSpace: PublicKey | undefined;
+    try {
+      const raw = await this.fetchGateObject(resolvedGateId);
+      const gate = this.extractGateRecord(raw);
+      const criteria = asRecord(gate?.criteria) ?? asRecord(asRecord(gate?.account)?.criteria);
+      grapeSpace = criteria
+        ? this.collectNamedPublicKeys(criteria, new Set(["grapeSpace"])).at(0)
+        : undefined;
+    } catch {
+      // Ignore: debug still useful without criteria decode.
+    }
+
+    let verificationStatus: DiscordVerificationStatus | undefined;
+    if (input.verificationDaoId) {
+      verificationStatus = await this.getDiscordVerificationStatus({
+        daoId: input.verificationDaoId,
+        discordUserId: input.discordUserId,
+        identifiers
+      });
+    }
+
+    const fromIdentifiers = await this.deriveDiscordIdentityAndLinkAccounts({
+      walletPubkey: input.walletPubkey,
+      identifiers,
+      grapeSpace,
+      verificationDaoId: input.verificationDaoId
+    });
+    const fromWalletFallback = await this.deriveIdentityAndLinkFromWallet({
+      walletPubkey: input.walletPubkey,
+      grapeSpace,
+      verificationDaoId: input.verificationDaoId
+    });
+
+    return {
+      gateId: input.gateId,
+      resolvedGateId,
+      verificationDaoId: input.verificationDaoId,
+      grapeSpace: grapeSpace?.toBase58(),
+      identifiers,
+      expandedIdentifiers,
+      verificationStatus,
+      fromIdentifiers: {
+        identityAccount: fromIdentifiers.identityAccount?.toBase58(),
+        linkAccount: fromIdentifiers.linkAccount?.toBase58()
+      },
+      fromWalletFallback: {
+        identityAccount: fromWalletFallback.identityAccount?.toBase58(),
+        linkAccount: fromWalletFallback.linkAccount?.toBase58()
+      }
+    };
   }
 }
