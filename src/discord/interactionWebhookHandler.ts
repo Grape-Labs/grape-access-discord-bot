@@ -577,9 +577,45 @@ export class InteractionWebhookHandler {
     let failedCount = 0;
 
     for (const map of maps) {
+      const onchainDaoIds =
+        map.verificationDaoId || map.reputationDaoId || map.daoId
+          ? {}
+          : await this.accessClient.getGateDaoIds(map.gateId);
+      const verificationDaoId =
+        map.verificationDaoId ?? map.daoId ?? onchainDaoIds.verificationDaoId ?? onchainDaoIds.daoId;
+      const reputationDaoId =
+        map.reputationDaoId ?? map.daoId ?? onchainDaoIds.reputationDaoId ?? onchainDaoIds.daoId;
+      const daoId = map.daoId ?? onchainDaoIds.daoId ?? verificationDaoId ?? reputationDaoId;
+
+      if (
+        daoId !== map.daoId ||
+        verificationDaoId !== map.verificationDaoId ||
+        reputationDaoId !== map.reputationDaoId
+      ) {
+        await this.store.upsertGateMapping({
+          guildId: map.guildId,
+          gateId: map.gateId,
+          verificationDaoId,
+          reputationDaoId,
+          daoId,
+          passRoleId: map.passRoleId,
+          failAction: map.failAction,
+          enabled: map.enabled
+        });
+      }
+
       try {
         const result = await retryWithBackoff(
-          () => this.accessClient.checkAccess({ gateId: map.gateId, walletPubkey: wallet, mode }),
+          () =>
+            this.accessClient.checkAccess({
+              gateId: map.gateId,
+              walletPubkey: wallet,
+              mode,
+              discordUserId,
+              identifiers: identityCandidates,
+              verificationDaoId,
+              reputationDaoId
+            }),
           {
             maxAttempts: 4,
             baseDelayMs: 500,

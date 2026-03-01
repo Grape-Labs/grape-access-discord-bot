@@ -129,7 +129,11 @@ export class GateSyncService {
             this.accessClient.checkAccess({
               gateId: gateMap.gateId,
               walletPubkey: link.walletPubkey,
-              mode: checkMode
+              mode: checkMode,
+              discordUserId: link.discordUserId,
+              identifiers: [link.discordUserId],
+              verificationDaoId: gateMap.verificationDaoId ?? gateMap.daoId,
+              reputationDaoId: gateMap.reputationDaoId ?? gateMap.daoId
             }),
           {
             maxAttempts: 4,

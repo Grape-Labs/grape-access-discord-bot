@@ -9,6 +9,10 @@ interface CheckAccessInput {
   gateId: string;
   walletPubkey: string;
   mode: CheckSource;
+  discordUserId?: string;
+  identifiers?: string[];
+  verificationDaoId?: string;
+  reputationDaoId?: string;
 }
 
 export interface DiscordVerificationStatus {
@@ -106,6 +110,44 @@ function parseSpaceSalt(spaceData: Uint8Array): Uint8Array | undefined {
     return undefined;
   }
   return spaceData.slice(offset, offset + 32);
+}
+
+function toNumberLike(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  const rec = asRecord(value);
+  if (!rec) {
+    return undefined;
+  }
+
+  const toNumber = rec.toNumber;
+  if (typeof toNumber === "function") {
+    try {
+      const n = Reflect.apply(toNumber, value, []) as number;
+      return Number.isFinite(n) ? n : undefined;
+    } catch {
+      // continue
+    }
+  }
+
+  const toString = rec.toString;
+  if (typeof toString === "function") {
+    try {
+      const s = String(Reflect.apply(toString, value, []));
+      const n = Number(s);
+      return Number.isFinite(n) ? n : undefined;
+    } catch {
+      // continue
+    }
+  }
+
+  return undefined;
 }
 
 function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
@@ -487,6 +529,52 @@ export class AccessClient {
     return Array.from(deduped.values());
   }
 
+  private collectNamedNumbers(root: unknown, fieldNames: ReadonlySet<string>): number[] {
+    const out: number[] = [];
+    const seenObjects = new Set<object>();
+
+    const walk = (value: unknown, depth: number): void => {
+      if (depth > 8 || value === null || value === undefined) {
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          walk(entry, depth + 1);
+        }
+        return;
+      }
+
+      if (typeof value !== "object") {
+        return;
+      }
+
+      const obj = value as object;
+      if (seenObjects.has(obj)) {
+        return;
+      }
+      seenObjects.add(obj);
+
+      const rec = asRecord(value);
+      if (!rec) {
+        return;
+      }
+
+      for (const [k, v] of Object.entries(rec)) {
+        if (fieldNames.has(k)) {
+          const n = toNumberLike(v);
+          if (n !== undefined) {
+            out.push(n);
+          }
+        }
+        walk(v, depth + 1);
+      }
+    };
+
+    walk(root, 0);
+    return out;
+  }
+
   private async recoverDaoIdFromSeededAccount(params: {
     sourcePda: PublicKey;
     seedPrefix: "config" | "space";
@@ -700,6 +788,113 @@ export class AccessClient {
       deduped.set(Buffer.from(hash).toString("hex"), hash);
     }
     return Array.from(deduped.values());
+  }
+
+  private async deriveDiscordIdentityAndLinkAccounts(params: {
+    walletPubkey: string;
+    identifiers: string[];
+    grapeSpace?: PublicKey;
+    verificationDaoId?: string;
+  }): Promise<{ identityAccount?: PublicKey; linkAccount?: PublicKey }> {
+    let gvr: Record<string, unknown>;
+    try {
+      gvr = (await import("@grapenpm/grape-verification-registry")) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+
+    const deriveSpacePda = gvr.deriveSpacePda;
+    const deriveIdentityPda = gvr.deriveIdentityPda;
+    const deriveLinkPda = gvr.deriveLinkPda;
+    const identityHash = gvr.identityHash;
+    const walletHash = gvr.walletHash;
+    const verificationPlatform = gvr.VerificationPlatform as Record<string, unknown> | undefined;
+    const tagDiscord = gvr.TAG_DISCORD;
+
+    if (
+      typeof deriveIdentityPda !== "function" ||
+      typeof deriveLinkPda !== "function" ||
+      typeof identityHash !== "function" ||
+      typeof walletHash !== "function" ||
+      typeof tagDiscord !== "string"
+    ) {
+      return {};
+    }
+
+    let spacePda: PublicKey | undefined = params.grapeSpace;
+    if (!spacePda && params.verificationDaoId) {
+      if (typeof deriveSpacePda !== "function") {
+        return {};
+      }
+
+      try {
+        const daoPk = new PublicKey(params.verificationDaoId);
+        const [derivedSpacePda] = Reflect.apply(deriveSpacePda, gvr, [daoPk]) as [PublicKey, number];
+        spacePda = derivedSpacePda;
+      } catch {
+        return {};
+      }
+    }
+    if (!spacePda) {
+      return {};
+    }
+
+    let walletPk: PublicKey;
+    try {
+      walletPk = new PublicKey(params.walletPubkey);
+    } catch {
+      return {};
+    }
+
+    const spaceInfo = await this.withRpcTimeout("getAccountInfo(space)", () =>
+      this.connection.getAccountInfo(spacePda, "confirmed")
+    );
+    if (!spaceInfo) {
+      return {};
+    }
+
+    const salt = parseSpaceSalt(spaceInfo.data);
+    if (!salt) {
+      return {};
+    }
+
+    const platformSeedRaw = verificationPlatform?.Discord;
+    const platformSeed = typeof platformSeedRaw === "number" ? platformSeedRaw : 0;
+    const walletHashBytes = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
+
+    for (const identifier of params.identifiers) {
+      try {
+        const idHash = Reflect.apply(identityHash, gvr, [salt, tagDiscord, identifier]) as Uint8Array;
+        const [identityPda] = Reflect.apply(deriveIdentityPda, gvr, [
+          spacePda,
+          platformSeed,
+          idHash
+        ]) as [PublicKey, number];
+        const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
+          this.connection.getAccountInfo(identityPda, "confirmed")
+        );
+        if (!identityInfo) {
+          continue;
+        }
+
+        const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [
+          identityPda,
+          walletHashBytes
+        ]) as [PublicKey, number];
+        const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
+          this.connection.getAccountInfo(linkPda, "confirmed")
+        );
+
+        return {
+          identityAccount: identityPda,
+          linkAccount: linkInfo ? linkPda : undefined
+        };
+      } catch {
+        // Continue.
+      }
+    }
+
+    return {};
   }
 
   async getDiscordVerificationStatus(params: {
@@ -1097,25 +1292,95 @@ export class AccessClient {
       };
     }
 
-    const argsVariants = [
-      [
-        {
-          accessId: gatePk,
-          gateId,
-          gate: gatePk,
-          user: walletPk,
-          wallet: walletPk,
-          walletPubkey: input.walletPubkey,
-          mode: shouldWrite ? "write" : "simulate",
-          write: shouldWrite,
-          writeRecord: shouldWrite,
-          storeRecord: shouldWrite,
-          cluster: config.cluster,
-          connection: this.connection,
-          signer: this.onchainSigner,
-          programs: config.programs
+    const identifiersRaw = [
+      ...(input.identifiers ?? []),
+      ...(input.discordUserId ? [input.discordUserId] : [])
+    ];
+    const identifiers = Array.from(
+      new Set(identifiersRaw.map((x) => x.trim()).filter((x) => x.length > 0))
+    );
+
+    let gateRec: Record<string, unknown> | undefined;
+    try {
+      const gateRaw = await this.fetchGateObject(gateId);
+      gateRec = this.extractGateRecord(gateRaw);
+    } catch {
+      gateRec = undefined;
+    }
+
+    const criteria = asRecord(gateRec?.criteria) ?? asRecord(asRecord(gateRec?.account)?.criteria);
+    const vineConfig = criteria
+      ? this.collectNamedPublicKeys(criteria, new Set(["vineConfig"])).at(0)
+      : undefined;
+    const grapeSpace = criteria
+      ? this.collectNamedPublicKeys(criteria, new Set(["grapeSpace"])).at(0)
+      : undefined;
+    const season = criteria
+      ? this.collectNamedNumbers(criteria, new Set(["season"])).find((n) => Number.isInteger(n) && n >= 0)
+      : undefined;
+
+    let reputationAccount: PublicKey | undefined;
+    if (vineConfig && season !== undefined) {
+      try {
+        const mod = (await import("@grapenpm/grape-access-sdk")) as Record<string, unknown>;
+        const findVineReputationPda = mod.findVineReputationPda;
+        if (typeof findVineReputationPda === "function") {
+          const [reputationPda] = (await Promise.resolve(
+            Reflect.apply(findVineReputationPda, mod, [
+              vineConfig,
+              walletPk,
+              season,
+              this.reputationProgramId
+            ])
+          )) as [PublicKey, number];
+          reputationAccount = reputationPda;
         }
-      ],
+      } catch {
+        // Ignore.
+      }
+    }
+
+    const needVerification = Boolean(grapeSpace) || Boolean(input.verificationDaoId) || identifiers.length > 0;
+    let identityAccount: PublicKey | undefined;
+    let linkAccount: PublicKey | undefined;
+    if (needVerification && identifiers.length > 0) {
+      const identityAndLink = await this.deriveDiscordIdentityAndLinkAccounts({
+        walletPubkey: input.walletPubkey,
+        identifiers,
+        grapeSpace,
+        verificationDaoId: input.verificationDaoId
+      });
+      identityAccount = identityAndLink.identityAccount;
+      linkAccount = identityAndLink.linkAccount;
+    }
+
+    const checkParams: Record<string, unknown> = {
+      accessId: gatePk,
+      gateId: gatePk,
+      user: walletPk,
+      wallet: walletPk,
+      walletPubkey: input.walletPubkey,
+      mode: shouldWrite ? "write" : "simulate",
+      write: shouldWrite,
+      writeRecord: shouldWrite,
+      storeRecord: shouldWrite,
+      cluster: config.cluster,
+      connection: this.connection,
+      signer: this.onchainSigner,
+      programs: config.programs
+    };
+    if (identityAccount) {
+      checkParams.identityAccount = identityAccount;
+    }
+    if (linkAccount) {
+      checkParams.linkAccount = linkAccount;
+    }
+    if (reputationAccount) {
+      checkParams.reputationAccount = reputationAccount;
+    }
+
+    const argsVariants = [
+      [checkParams],
       [{ accessId: gatePk, user: walletPk, storeRecord: shouldWrite }],
       [{ gateId: gatePk, user: walletPk, storeRecord: shouldWrite }],
       [gateId, input.walletPubkey, { write: shouldWrite, cluster: config.cluster }],
@@ -1143,6 +1408,29 @@ export class AccessClient {
       )
     );
 
-    return normalizeResult(raw, source);
+    const normalized = normalizeResult(raw, source);
+    if (!normalized.passed && !normalized.reason) {
+      if (criteria && grapeSpace && !identityAccount) {
+        normalized.reason = "discord_identity_not_found_for_verification_criteria";
+      } else if (criteria && grapeSpace && identityAccount && !linkAccount) {
+        normalized.reason = "wallet_not_linked_to_verified_discord_identity";
+      } else if (criteria && vineConfig && season !== undefined && !reputationAccount) {
+        normalized.reason = "reputation_account_not_resolved";
+      } else {
+        normalized.reason = "criteria_not_met_or_missing_required_accounts";
+      }
+    }
+    normalized.proof = {
+      ...(normalized.proof ?? {}),
+      diagnostic: {
+        usedIdentityAccount: identityAccount?.toBase58(),
+        usedLinkAccount: linkAccount?.toBase58(),
+        usedReputationAccount: reputationAccount?.toBase58(),
+        hasVineConfig: Boolean(vineConfig),
+        hasGrapeSpace: Boolean(grapeSpace),
+        season
+      }
+    };
+    return normalized;
   }
 }
