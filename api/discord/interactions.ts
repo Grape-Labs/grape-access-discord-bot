@@ -3,12 +3,10 @@ import nacl from "tweetnacl";
 import { waitUntil } from "@vercel/functions";
 import { config } from "../../src/config.js";
 import { logger } from "../../src/logger.js";
-import { InMemoryStore } from "../../src/store.js";
-import { AccessClient } from "../../src/services/accessClient.js";
-import { ManifestService } from "../../src/services/manifestService.js";
-import { GateSyncService } from "../../src/services/gateSyncService.js";
-import { DiscordRestClient } from "../../src/services/discordRestClient.js";
-import { InteractionWebhookHandler } from "../../src/discord/interactionWebhookHandler.js";
+
+interface DeferredHandler {
+  handle(interaction: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
+}
 
 async function readRawBody(req: VercelRequest): Promise<string> {
   const chunks: Buffer[] = [];
@@ -25,12 +23,34 @@ function verifyDiscordRequest(rawBody: string, signature: string, timestamp: str
   return nacl.sign.detached.verify(message, sig, publicKey);
 }
 
-const store = new InMemoryStore();
-const accessClient = new AccessClient();
-const manifestService = new ManifestService(accessClient);
-const discordClient = new DiscordRestClient();
-const gateSyncService = new GateSyncService(store, accessClient, manifestService, discordClient);
-const handler = new InteractionWebhookHandler(store, accessClient, manifestService, gateSyncService);
+let handlerPromise: Promise<DeferredHandler> | undefined;
+
+async function getHandler(): Promise<DeferredHandler> {
+  if (handlerPromise) {
+    return handlerPromise;
+  }
+
+  handlerPromise = (async () => {
+    const [{ InMemoryStore }, { AccessClient }, { ManifestService }, { GateSyncService }, { DiscordRestClient }, { InteractionWebhookHandler }] =
+      await Promise.all([
+        import("../../src/store.js"),
+        import("../../src/services/accessClient.js"),
+        import("../../src/services/manifestService.js"),
+        import("../../src/services/gateSyncService.js"),
+        import("../../src/services/discordRestClient.js"),
+        import("../../src/discord/interactionWebhookHandler.js")
+      ]);
+
+    const store = new InMemoryStore();
+    const accessClient = new AccessClient();
+    const manifestService = new ManifestService(accessClient);
+    const discordClient = new DiscordRestClient();
+    const gateSyncService = new GateSyncService(store, accessClient, manifestService, discordClient);
+    return new InteractionWebhookHandler(store, accessClient, manifestService, gateSyncService);
+  })();
+
+  return handlerPromise;
+}
 
 const InteractionResponseType = {
   PONG: 1,
@@ -114,7 +134,8 @@ export default async function interactions(req: VercelRequest, res: VercelRespon
   }
 
   if (!interactionToken || !applicationId) {
-    const result = await handler.handle(payload as never);
+    const handler = await getHandler();
+    const result = await handler.handle(payload);
     res.status(result.status).json(result.body);
     return;
   }
@@ -126,7 +147,8 @@ export default async function interactions(req: VercelRequest, res: VercelRespon
 
   waitUntil((async () => {
     try {
-      const result = await handler.handle(payload as never);
+      const handler = await getHandler();
+      const result = await handler.handle(payload);
       const content = extractContent(result.body);
       await editOriginalInteractionResponse({
         applicationId,
