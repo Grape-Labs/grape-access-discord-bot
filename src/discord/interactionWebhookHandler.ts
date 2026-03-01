@@ -313,6 +313,14 @@ export class InteractionWebhookHandler {
     let latestLink = await this.store.getLatestWalletLink(discordUserId, guildId);
     if (!latestLink) {
       const lookupNotes: string[] = [];
+      const verificationFindings: Array<{
+        gateId: string;
+        identityFound: boolean;
+        linksFound: number;
+        reason?: string;
+        identityPda?: string;
+        matchedIdentifier?: string;
+      }> = [];
 
       for (const map of maps) {
         const onchainDaoId = map.daoId ?? (await this.accessClient.getGateDaoId(map.gateId));
@@ -350,19 +358,57 @@ export class InteractionWebhookHandler {
           break;
         }
 
-        lookupNotes.push(`gate ${map.gateId}: no verification link match for dao ${onchainDaoId}`);
+        const verificationStatus = await this.accessClient.getDiscordVerificationStatus({
+          daoId: onchainDaoId,
+          discordUserId,
+          identifiers: identityCandidates
+        });
+        verificationFindings.push({
+          gateId: map.gateId,
+          identityFound: verificationStatus.identityFound,
+          linksFound: verificationStatus.linksFound,
+          reason: verificationStatus.reason,
+          identityPda: verificationStatus.identityPda,
+          matchedIdentifier: verificationStatus.matchedIdentifier
+        });
+
+        if (verificationStatus.identityFound) {
+          lookupNotes.push(
+            `gate ${map.gateId}: identity_found pda=${verificationStatus.identityPda ?? "unknown"} links=${verificationStatus.linksFound}`
+          );
+        } else {
+          lookupNotes.push(
+            `gate ${map.gateId}: no verification link match for dao ${onchainDaoId} (${verificationStatus.reason ?? "identity_not_found"})`
+          );
+        }
       }
 
       if (!latestLink && lookupNotes.length > 0) {
+        const anyIdentityFound = verificationFindings.some((x) => x.identityFound);
         logger.warn(
           {
             guild_id: guildId,
             user: discordUserId,
             identities: identityCandidates,
-            lookup_notes: lookupNotes
+            lookup_notes: lookupNotes,
+            verification_findings: verificationFindings
           },
           "On-chain verification lookup did not find wallet"
         );
+
+        if (anyIdentityFound) {
+          return ephemeralMessage(
+            [
+              "Verified Discord identity found on-chain, but wallet pubkey is not in bot KV yet.",
+              "The verification registry stores wallet hash links, so wallet recovery requires callback sync.",
+              "Configure verification callback to one of:",
+              "- /api/verification/link",
+              "- /api/discord/callback",
+              "Required callback fields: discordUserId, walletPubkey, guildId.",
+              `debug: ${lookupNotes.join(" | ")}`
+            ].join("\n")
+          );
+        }
       }
     }
 

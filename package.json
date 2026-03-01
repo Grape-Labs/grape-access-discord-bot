@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@grapenpm/grape-access-sdk": "latest",
+    "@grapenpm/grape-verification-registry": "^0.2.1",
     "@solana/web3.js": "^1.98.0",
     "@vercel/functions": "^2.2.4",
     "@vercel/kv": "^3.0.0",

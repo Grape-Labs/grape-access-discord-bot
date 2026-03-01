@@ -94,9 +94,9 @@ JSON body:
 
 GET query aliases supported:
 
-- `discordUserId` or `discord_user_id`
-- `walletPubkey` or `wallet` or `wallet_pubkey`
-- `guildId` or `guild_id`
+- `discordUserId` or `discord_user_id` or `platform_user_id`
+- `walletPubkey` or `wallet` or `wallet_pubkey` or `wallet_address` or `address`
+- `guildId` or `guild_id` or `guild`
 - `gateId` or `gate_id`
 
 ## Program IDs

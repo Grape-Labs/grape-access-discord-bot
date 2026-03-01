@@ -11,6 +11,15 @@ interface CheckAccessInput {
   mode: CheckSource;
 }
 
+export interface DiscordVerificationStatus {
+  identityFound: boolean;
+  linksFound: number;
+  daoId: string;
+  matchedIdentifier?: string;
+  identityPda?: string;
+  reason?: string;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -88,6 +97,15 @@ function sha256Bytes(input: string): Uint8Array {
 
 function sha256Buffer(input: Uint8Array | Buffer): Uint8Array {
   return createHash("sha256").update(input).digest();
+}
+
+function parseSpaceSalt(spaceData: Uint8Array): Uint8Array | undefined {
+  // Layout: disc(8) + version(1) + dao(32) + authority(32) + attestor(32) + is_frozen(1) + bump(1) + salt(32)
+  const offset = 8 + 1 + 32 + 32 + 32 + 1 + 1;
+  if (spaceData.length < offset + 32) {
+    return undefined;
+  }
+  return spaceData.slice(offset, offset + 32);
 }
 
 function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
@@ -628,6 +646,153 @@ export class AccessClient {
       deduped.set(Buffer.from(hash).toString("hex"), hash);
     }
     return Array.from(deduped.values());
+  }
+
+  async getDiscordVerificationStatus(params: {
+    daoId: string;
+    discordUserId?: string;
+    identifiers?: string[];
+  }): Promise<DiscordVerificationStatus> {
+    let gvr: Record<string, unknown>;
+    try {
+      gvr = (await import("@grapenpm/grape-verification-registry")) as Record<string, unknown>;
+    } catch {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "verification_registry_sdk_unavailable"
+      };
+    }
+
+    const deriveSpacePda = gvr.deriveSpacePda;
+    const deriveIdentityPda = gvr.deriveIdentityPda;
+    const identityHash = gvr.identityHash;
+    const fetchLinksForIdentity = gvr.fetchLinksForIdentity;
+    const verificationPlatform = gvr.VerificationPlatform as Record<string, unknown> | undefined;
+    const tagDiscord = gvr.TAG_DISCORD;
+
+    if (
+      typeof deriveSpacePda !== "function" ||
+      typeof deriveIdentityPda !== "function" ||
+      typeof identityHash !== "function" ||
+      typeof fetchLinksForIdentity !== "function" ||
+      typeof tagDiscord !== "string"
+    ) {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "verification_registry_exports_missing"
+      };
+    }
+
+    const discordPlatformSeedRaw = verificationPlatform?.Discord;
+    const discordPlatformSeed =
+      typeof discordPlatformSeedRaw === "number" ? discordPlatformSeedRaw : 0;
+
+    let daoPk: PublicKey;
+    try {
+      daoPk = new PublicKey(params.daoId);
+    } catch {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "invalid_dao_id"
+      };
+    }
+
+    let spacePda: PublicKey;
+    try {
+      const res = Reflect.apply(deriveSpacePda, gvr, [daoPk]) as [PublicKey, number];
+      spacePda = res[0];
+    } catch {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "space_pda_derivation_failed"
+      };
+    }
+
+    const spaceInfo = await this.withRpcTimeout("getAccountInfo(space)", () =>
+      this.connection.getAccountInfo(spacePda, "confirmed")
+    );
+    if (!spaceInfo) {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "space_not_found"
+      };
+    }
+
+    const salt = parseSpaceSalt(spaceInfo.data);
+    if (!salt) {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "space_salt_parse_failed"
+      };
+    }
+
+    const identifiersRaw = [
+      ...(params.identifiers ?? []),
+      ...(params.discordUserId ? [params.discordUserId] : [])
+    ];
+    const identifiers = Array.from(
+      new Set(identifiersRaw.map((x) => x.trim()).filter((x) => x.length > 0))
+    );
+    if (identifiers.length === 0) {
+      return {
+        identityFound: false,
+        linksFound: 0,
+        daoId: params.daoId,
+        reason: "no_identifiers"
+      };
+    }
+
+    for (const identifier of identifiers) {
+      try {
+        const idHash = Reflect.apply(identityHash, gvr, [salt, tagDiscord, identifier]) as Uint8Array;
+        const [identityPda] = Reflect.apply(deriveIdentityPda, gvr, [
+          spacePda,
+          discordPlatformSeed,
+          idHash
+        ]) as [PublicKey, number];
+
+        const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
+          this.connection.getAccountInfo(identityPda, "confirmed")
+        );
+        if (!identityInfo) {
+          continue;
+        }
+
+        const links = await this.withRpcTimeout("fetchLinksForIdentity", () =>
+          Promise.resolve(Reflect.apply(fetchLinksForIdentity, gvr, [this.connection, identityPda]))
+        );
+        const linksFound = Array.isArray(links) ? links.length : 0;
+
+        return {
+          identityFound: true,
+          linksFound,
+          daoId: params.daoId,
+          matchedIdentifier: identifier,
+          identityPda: identityPda.toBase58()
+        };
+      } catch {
+        // Continue with next identifier.
+      }
+    }
+
+    return {
+      identityFound: false,
+      linksFound: 0,
+      daoId: params.daoId,
+      reason: "identity_not_found"
+    };
   }
 
   async getVerifiedWalletForDiscordUser(params: {

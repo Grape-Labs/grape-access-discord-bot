@@ -73,6 +73,7 @@ function parsePayload(req: VercelRequest): {
     body.discordUserId ??
     firstString(q.discordUserId) ??
     firstString(q.discord_user_id) ??
+    firstString(q.platform_user_id) ??
     firstString(q.userId) ??
     firstString(q.user_id) ??
     firstString(q.discordId) ??
@@ -83,13 +84,17 @@ function parsePayload(req: VercelRequest): {
     firstString(q.walletPubkey) ??
     firstString(q.wallet_pubkey) ??
     firstString(q.wallet) ??
+    firstString(q.wallet_address) ??
+    firstString(q.address) ??
+    firstString(q.user_wallet) ??
     firstString(q.publicKey) ??
     firstString(q.public_key);
 
   const guildId =
     body.guildId ??
     firstString(q.guildId) ??
-    firstString(q.guild_id);
+    firstString(q.guild_id) ??
+    firstString(q.guild);
 
   const gateId =
     body.gateId ??
