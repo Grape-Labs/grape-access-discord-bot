@@ -1,5 +1,6 @@
 import { PermissionFlagsBits } from "discord.js";
 import { URL } from "node:url";
+import { PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { InMemoryStore } from "../store.js";
@@ -148,11 +149,51 @@ export class InteractionWebhookHandler {
         return this.handleVerify(interaction);
       case "check":
         return this.handleCheck(interaction);
+      case "link-wallet":
+        return this.handleLinkWallet(interaction);
       case "sync-gate":
         return this.handleSyncGate(interaction);
       default:
         return ephemeralMessage("Unknown command.");
     }
+  }
+
+  private async handleLinkWallet(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const guildId = interaction.guild_id;
+    const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
+    if (!guildId || !discordUserId) {
+      return ephemeralMessage("This command must be run in a server.");
+    }
+
+    const wallet = getOptionString(interaction.data?.options, "wallet");
+    if (!wallet) {
+      return ephemeralMessage("Missing required option: wallet.");
+    }
+
+    try {
+      new PublicKey(wallet);
+    } catch {
+      return ephemeralMessage("Invalid wallet pubkey.");
+    }
+
+    await this.store.addWalletLink({
+      discordUserId,
+      guildId,
+      walletPubkey: wallet,
+      source: "manual_link_wallet_command"
+    });
+
+    const latest = await this.store.getLatestWalletLink(discordUserId, guildId);
+    return ephemeralMessage(
+      [
+        "Wallet linked for this guild.",
+        `guild_id: ${guildId}`,
+        `discord_user_id: ${discordUserId}`,
+        `wallet: ${latest?.walletPubkey ?? wallet}`,
+        `verified_at: ${latest?.verifiedAt ?? new Date().toISOString()}`,
+        "Run /check now."
+      ].join("\n")
+    );
   }
 
   private async handleSetupGate(interaction: DiscordInteraction): Promise<InteractionResult> {

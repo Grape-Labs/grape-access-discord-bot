@@ -40,6 +40,13 @@ export const commandBuilders = [
     .setDescription("Check your linked wallet against configured gate(s)"),
 
   new SlashCommandBuilder()
+    .setName("link-wallet")
+    .setDescription("Manually link your wallet for this server (testing)")
+    .addStringOption((opt) =>
+      opt.setName("wallet").setDescription("Wallet pubkey").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName("sync-gate")
     .setDescription("Batch sync role assignments for a gate in this guild")
     .addStringOption((opt) =>

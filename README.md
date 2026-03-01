@@ -29,6 +29,7 @@ DAO ID resolution for `/verify` links:
 - `/setup-gate gate_id pass_role_id [guild_id] [dao_id] [fail_action]`
 - `/verify`
 - `/check`
+- `/link-wallet wallet`
 - `/sync-gate gate_id [dry_run]`
 
 `/check` behavior:
