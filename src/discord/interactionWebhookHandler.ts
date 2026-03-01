@@ -95,6 +95,21 @@ function ephemeralMessage(message: string): InteractionResult {
   };
 }
 
+function buildDiscordVerificationUrl(params: {
+  verificationDaoId: string;
+  discordUserId: string;
+  guildId: string;
+  gateId: string;
+}): string {
+  const url = new URL(`/dao/${params.verificationDaoId}`, "https://verification.governance.so");
+  url.searchParams.set("source", "discord");
+  url.searchParams.set("platform", "discord");
+  url.searchParams.set("platform_user_id", params.discordUserId);
+  url.searchParams.set("guild_id", params.guildId);
+  url.searchParams.set("gate_id", params.gateId);
+  return url.toString();
+}
+
 function collectDiscordIdentityCandidates(interaction: DiscordInteraction): string[] {
   const u = interaction.member?.user ?? interaction.user;
   const candidatesRaw = [
@@ -381,7 +396,12 @@ export class InteractionWebhookHandler {
       lines.push(`gate_id ${map.gateId}: ${url.toString()}`);
       lines.push(
         verificationDaoId
-          ? `verification: https://verification.governance.so/dao/${verificationDaoId}`
+          ? `verification: ${buildDiscordVerificationUrl({
+              verificationDaoId,
+              discordUserId,
+              guildId,
+              gateId: map.gateId
+            })}`
           : "verification: DAO_ID missing (set `verification_dao_id` or `dao_id` in /setup-gate)"
       );
       lines.push(
@@ -677,6 +697,17 @@ export class InteractionWebhookHandler {
             if (logHint) {
               reasonText = `${reasonText} log_hint=${logHint}`;
             }
+          }
+
+          if (result.reason === "identity_account_required_custom_6004" && verificationDaoId) {
+            lines.push(
+              `action: complete Discord verification with this URL: ${buildDiscordVerificationUrl({
+                verificationDaoId,
+                discordUserId,
+                guildId,
+                gateId: map.gateId
+              })}`
+            );
           }
         }
 
