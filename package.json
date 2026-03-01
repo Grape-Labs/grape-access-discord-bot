@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "vercel dev",
-    "register-commands": "tsx src/registerCommands.ts"
+    "register-commands": "tsx src/registerCommands.ts",
+    "kv:reset": "node scripts/kv-reset.mjs"
   },
   "dependencies": {
     "@grapenpm/grape-access-sdk": "latest",

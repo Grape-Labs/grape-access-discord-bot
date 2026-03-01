@@ -79,6 +79,10 @@ export const commandBuilders = [
     ),
 
   new SlashCommandBuilder()
+    .setName("reset-me")
+    .setDescription("Reset your wallet link and identity overrides for this server"),
+
+  new SlashCommandBuilder()
     .setName("sync-gate")
     .setDescription("Batch sync role assignments for a gate in this guild")
     .addStringOption((opt) =>

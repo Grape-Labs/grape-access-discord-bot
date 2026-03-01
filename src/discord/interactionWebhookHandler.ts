@@ -170,6 +170,8 @@ export class InteractionWebhookHandler {
         return this.handleLinkIdentity(interaction);
       case "link-wallet":
         return this.handleLinkWallet(interaction);
+      case "reset-me":
+        return this.handleResetMe(interaction);
       case "sync-gate":
         return this.handleSyncGate(interaction);
       default:
@@ -291,6 +293,30 @@ export class InteractionWebhookHandler {
         `updated_at: ${saved.updatedAt}`,
         "Run /check now.",
         "Tip: use /debug-identity to compare auto-resolution vs manual override."
+      ].join("\n")
+    );
+  }
+
+  private async handleResetMe(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const guildId = interaction.guild_id;
+    const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
+    if (!guildId || !discordUserId) {
+      return ephemeralMessage("This command must be run in a server.");
+    }
+
+    const walletRemoved = await this.store.deleteLatestWalletLink(discordUserId, guildId);
+    const overridesRemoved = await this.store.deleteIdentityOverridesForUser(guildId, discordUserId);
+    const latestAfter = await this.store.getLatestWalletLink(discordUserId, guildId);
+
+    return ephemeralMessage(
+      [
+        "Reset complete for your user in this guild.",
+        `guild_id: ${guildId}`,
+        `discord_user_id: ${discordUserId}`,
+        `wallet_link_removed: ${walletRemoved}`,
+        `identity_overrides_removed: ${overridesRemoved}`,
+        `wallet_link_exists_after_reset: ${latestAfter ? "yes" : "no"}`,
+        "Next: run /verify and complete the verification flow again."
       ].join("\n")
     );
   }

@@ -33,6 +33,7 @@ DAO ID resolution for `/verify` links:
 - `/debug-identity gate_id`
 - `/link-identity gate_id identity_pda [link_pda]`
 - `/link-wallet wallet`
+- `/reset-me`
 - `/sync-gate gate_id [dry_run]`
 
 `/check` behavior:
@@ -72,6 +73,13 @@ Optional:
 npm install
 npm run register-commands
 npm run dev
+```
+
+KV reset helper (dangerous; deletes all keys under your prefix):
+
+```bash
+npm run kv:reset                 # dry run
+npm run kv:reset -- --apply --yes
 ```
 
 ## RPC Diagnostics

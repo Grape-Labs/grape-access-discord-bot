@@ -398,6 +398,69 @@ export class InMemoryStore {
     return this.state.identityOverrides.get(identityOverrideMemKey(guildId, gateId, discordUserId));
   }
 
+  async deleteIdentityOverridesForUser(guildId: string, discordUserId: string): Promise<number> {
+    await this.ensureBootstrapped();
+
+    if (this.useKv) {
+      const pattern = this.withPrefix("identity-override", guildId, "*", discordUserId);
+      const keys: string[] = [];
+      let cursor = "0";
+
+      do {
+        const [next, batch] = await kv.scan(cursor, { match: pattern, count: 1000 });
+        cursor = String(next);
+        for (const key of batch) {
+          if (typeof key === "string") {
+            keys.push(key);
+          }
+        }
+      } while (cursor !== "0");
+
+      if (keys.length > 0) {
+        await kv.del(...keys);
+      }
+      return keys.length;
+    }
+
+    let removed = 0;
+    for (const key of Array.from(this.state.identityOverrides.keys())) {
+      const [kGuildId, _kGateId, kDiscordUserId] = key.split(":");
+      if (kGuildId === guildId && kDiscordUserId === discordUserId) {
+        this.state.identityOverrides.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  async deleteLatestWalletLink(discordUserId: string, guildId: string): Promise<boolean> {
+    await this.ensureBootstrapped();
+
+    if (this.useKv) {
+      const key = this.walletLatestKey(guildId, discordUserId);
+      const existing = await kv.get<WalletLink>(key);
+      if (!existing) {
+        return false;
+      }
+      await kv.del(key);
+      return true;
+    }
+
+    let hadLatest = false;
+    for (const link of this.state.walletLinks) {
+      if (link.discordUserId === discordUserId && link.guildId === guildId) {
+        hadLatest = true;
+        break;
+      }
+    }
+
+    this.state.walletLinks = this.state.walletLinks.filter(
+      (link) => !(link.discordUserId === discordUserId && link.guildId === guildId)
+    );
+
+    return hadLatest;
+  }
+
   async addWalletLink(link: {
     discordUserId: string;
     walletPubkey: string;
