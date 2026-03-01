@@ -299,6 +299,24 @@ export class AccessClient {
   private async candidateObjects(): Promise<unknown[]> {
     const root = await this.loadSdkRoot();
     const candidates: unknown[] = [root];
+    const hasUsableProviderWallet = (candidate: unknown): boolean => {
+      const rec = asRecord(candidate);
+      if (!rec) {
+        return true;
+      }
+
+      const provider = asRecord(rec.provider);
+      if (!provider) {
+        return true;
+      }
+
+      const wallet = asRecord(provider.wallet);
+      if (!wallet) {
+        return false;
+      }
+
+      return Boolean(toPublicKey(wallet.publicKey));
+    };
 
     const nestedRoots = [
       ["access"],
@@ -339,12 +357,18 @@ export class AccessClient {
             signer: this.onchainSigner
           }
         ]);
+        if (!hasUsableProviderWallet(instance)) {
+          throw new Error("constructed SDK client has no provider.wallet.publicKey");
+        }
         candidates.push(instance);
       } catch {
         const anchorProvider = await this.getAnchorProvider();
         if (anchorProvider) {
           try {
             const instance = Reflect.construct(ctor, [anchorProvider, this.accessProgramId]);
+            if (!hasUsableProviderWallet(instance)) {
+              throw new Error("anchor-constructed SDK client has no provider.wallet.publicKey");
+            }
             candidates.push(instance);
             continue;
           } catch {
@@ -354,6 +378,9 @@ export class AccessClient {
 
         try {
           const instance = Reflect.construct(ctor, [this.connection]);
+          if (!hasUsableProviderWallet(instance)) {
+            throw new Error("connection-constructed SDK client has no provider.wallet.publicKey");
+          }
           candidates.push(instance);
         } catch {
           // Ignore constructor mismatch and continue.
@@ -380,7 +407,7 @@ export class AccessClient {
             }
           ])
         );
-        if (produced) {
+        if (produced && hasUsableProviderWallet(produced)) {
           candidates.push(produced);
         }
       } catch {
