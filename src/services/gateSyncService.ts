@@ -27,6 +27,41 @@ interface SyncOptions {
   singleDiscordUserId?: string;
 }
 
+function collectIdentityCandidatesFromMember(member: {
+  user: {
+    id: string;
+    username?: string;
+    global_name?: string | null;
+    discriminator?: string;
+  };
+  nick?: string | null;
+}): string[] {
+  const raw = [
+    member.user.id,
+    member.user.username,
+    member.user.global_name ?? undefined,
+    member.nick ?? undefined
+  ];
+
+  const withDiscriminator =
+    member.user.username &&
+    member.user.discriminator &&
+    member.user.discriminator !== "0"
+      ? `${member.user.username}#${member.user.discriminator}`
+      : undefined;
+  if (withDiscriminator) {
+    raw.push(withDiscriminator);
+  }
+
+  return Array.from(
+    new Set(
+      raw
+        .map((x) => (x ?? "").trim())
+        .filter((x) => x.length > 0)
+    )
+  );
+}
+
 export class GateSyncService {
   constructor(
     private readonly store: InMemoryStore,
@@ -126,43 +161,102 @@ export class GateSyncService {
         gateMap.gateId,
         link.discordUserId
       );
+      const identityCandidates = collectIdentityCandidatesFromMember(member);
+      const verificationDaoId = gateMap.verificationDaoId ?? gateMap.daoId;
+      const reputationDaoId = gateMap.reputationDaoId ?? gateMap.daoId;
 
       summary.checked += 1;
 
       try {
-        const result = await retryWithBackoff(
-          () =>
-            this.accessClient.checkAccess({
+        const checkWithOverrides = async (overrides?: { identityAccount?: string; linkAccount?: string }) =>
+          retryWithBackoff(
+            () =>
+              this.accessClient.checkAccess({
+                gateId: gateMap.gateId,
+                walletPubkey: link.walletPubkey,
+                mode: checkMode,
+                discordUserId: link.discordUserId,
+                identifiers: identityCandidates,
+                verificationDaoId,
+                reputationDaoId,
+                identityAccountOverride: overrides?.identityAccount,
+                linkAccountOverride: overrides?.linkAccount
+              }),
+            {
+              maxAttempts: 4,
+              baseDelayMs: 500,
+              maxDelayMs: 4_000
+            },
+            (attempt, err, delayMs) => {
+              logger.warn(
+                {
+                  guild_id: gateMap.guildId,
+                  gate_id: gateMap.gateId,
+                  user: link.discordUserId,
+                  wallet: link.walletPubkey,
+                  attempt,
+                  delay_ms: delayMs,
+                  err: String(err)
+                },
+                "Retrying gate check"
+              );
+            }
+          );
+
+        let effectiveOverride = identityOverride;
+        let autoResolution: Record<string, unknown> | undefined;
+        let result = await checkWithOverrides({
+          identityAccount: effectiveOverride?.identityAccount,
+          linkAccount: effectiveOverride?.linkAccount
+        });
+
+        if (!result.passed && result.reason === "identity_account_required_custom_6004" && verificationDaoId) {
+          const debug = await this.accessClient.debugIdentityResolution({
+            gateId: gateMap.gateId,
+            walletPubkey: link.walletPubkey,
+            discordUserId: link.discordUserId,
+            identifiers: identityCandidates,
+            verificationDaoId
+          });
+
+          const resolvedIdentity =
+            debug.fromIdentifiers?.identityAccount ??
+            debug.fromWalletFallback?.identityAccount ??
+            debug.verificationStatus?.identityPda;
+          const resolvedLink = debug.fromIdentifiers?.linkAccount ?? debug.fromWalletFallback?.linkAccount;
+
+          if (resolvedIdentity) {
+            effectiveOverride = await this.store.upsertIdentityOverride({
+              guildId: gateMap.guildId,
               gateId: gateMap.gateId,
-              walletPubkey: link.walletPubkey,
-              mode: checkMode,
               discordUserId: link.discordUserId,
-              identifiers: [link.discordUserId],
-              verificationDaoId: gateMap.verificationDaoId ?? gateMap.daoId,
-              reputationDaoId: gateMap.reputationDaoId ?? gateMap.daoId,
-              identityAccountOverride: identityOverride?.identityAccount,
-              linkAccountOverride: identityOverride?.linkAccount
-            }),
-          {
-            maxAttempts: 4,
-            baseDelayMs: 500,
-            maxDelayMs: 4_000
-          },
-          (attempt, err, delayMs) => {
-            logger.warn(
-              {
-                guild_id: gateMap.guildId,
-                gate_id: gateMap.gateId,
-                user: link.discordUserId,
-                wallet: link.walletPubkey,
-                attempt,
-                delay_ms: delayMs,
-                err: String(err)
-              },
-              "Retrying gate check"
-            );
+              identityAccount: resolvedIdentity,
+              linkAccount: resolvedLink,
+              source: "gate_sync_auto_identity_resolution"
+            });
+
+            autoResolution = {
+              attempted: true,
+              identityAccount: resolvedIdentity,
+              linkAccount: resolvedLink ?? null,
+              verificationIdentityFound: debug.verificationStatus?.identityFound ?? false,
+              verificationMatchedIdentifier: debug.verificationStatus?.matchedIdentifier ?? null
+            };
+
+            result = await checkWithOverrides({
+              identityAccount: effectiveOverride.identityAccount,
+              linkAccount: effectiveOverride.linkAccount
+            });
+          } else {
+            autoResolution = {
+              attempted: true,
+              identityAccount: null,
+              linkAccount: null,
+              verificationIdentityFound: debug.verificationStatus?.identityFound ?? false,
+              verificationMatchedIdentifier: debug.verificationStatus?.matchedIdentifier ?? null
+            };
           }
-        );
+        }
 
         const action = await this.applyRoleOutcome({
           guildId: gateMap.guildId,
@@ -198,12 +292,14 @@ export class GateSyncService {
           reason: result.reason,
           proof: {
             ...(result.proof ?? {}),
-            identityOverride: identityOverride
+            identityCandidates,
+            autoIdentityResolution: autoResolution,
+            identityOverride: effectiveOverride
               ? {
-                  identityAccount: identityOverride.identityAccount,
-                  linkAccount: identityOverride.linkAccount,
-                  source: identityOverride.source,
-                  updatedAt: identityOverride.updatedAt
+                  identityAccount: effectiveOverride.identityAccount,
+                  linkAccount: effectiveOverride.linkAccount,
+                  source: effectiveOverride.source,
+                  updatedAt: effectiveOverride.updatedAt
                 }
               : undefined,
             verifiedAt: link.verifiedAt,

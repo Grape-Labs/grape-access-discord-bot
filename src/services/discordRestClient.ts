@@ -3,7 +3,13 @@ import { config } from "../config.js";
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 
 interface DiscordMember {
-  user: { id: string };
+  user: {
+    id: string;
+    username?: string;
+    global_name?: string | null;
+    discriminator?: string;
+  };
+  nick?: string | null;
   roles: string[];
 }
 

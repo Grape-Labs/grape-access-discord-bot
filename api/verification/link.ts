@@ -20,6 +20,37 @@ type CallbackPayload = {
   linkPda?: string;
 };
 
+function collectIdentityCandidatesFromMember(
+  discordUserId: string,
+  member:
+    | {
+        user?: {
+          id?: string;
+          username?: string;
+          global_name?: string | null;
+          discriminator?: string;
+        };
+        nick?: string | null;
+      }
+    | null
+): string[] {
+  const userId = member?.user?.id ?? discordUserId;
+  const username = member?.user?.username;
+  const globalName = member?.user?.global_name ?? undefined;
+  const nick = member?.nick ?? undefined;
+  const discriminator = member?.user?.discriminator;
+  const usernameWithDiscriminator =
+    username && discriminator && discriminator !== "0" ? `${username}#${discriminator}` : undefined;
+
+  return Array.from(
+    new Set(
+      [userId, username, globalName, nick, usernameWithDiscriminator]
+        .map((x) => (x ?? "").trim())
+        .filter((x) => x.length > 0)
+    )
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -327,6 +358,20 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
 
   const syncResults: Array<Record<string, unknown>> = [];
   const appliedIdentityOverrides: Array<Record<string, unknown>> = [];
+  let callbackMember: Awaited<ReturnType<DiscordRestClient["fetchMember"]>> = null;
+  try {
+    callbackMember = await discordClient.fetchMember(guildId, payload.discordUserId);
+  } catch (err) {
+    logger.warn(
+      {
+        guild_id: guildId,
+        user: payload.discordUserId,
+        err: String(err)
+      },
+      "Failed to fetch Discord member during callback identity candidate build; using user ID fallback"
+    );
+  }
+  const callbackIdentifiers = collectIdentityCandidatesFromMember(payload.discordUserId, callbackMember);
 
   if (mappingsToSync.length > 0) {
     for (const map of mappingsToSync) {
@@ -339,7 +384,7 @@ export default async function verificationLink(req: VercelRequest, res: VercelRe
           gateId: map.gateId,
           walletPubkey: payload.walletPubkey,
           discordUserId: payload.discordUserId,
-          identifiers: [payload.discordUserId],
+          identifiers: callbackIdentifiers,
           verificationDaoId: map.verificationDaoId ?? map.daoId
         });
 
