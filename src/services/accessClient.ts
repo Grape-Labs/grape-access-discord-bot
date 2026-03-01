@@ -113,6 +113,14 @@ function normalizeResult(raw: unknown, mode: CheckSource): AccessCheckResult {
     return { passed: raw, source: mode };
   }
 
+  if (typeof raw === "string" && raw.length > 0) {
+    return {
+      passed: true,
+      source: mode,
+      proof: { tx: raw }
+    };
+  }
+
   const rec = asRecord(raw);
   if (!rec) {
     return {
@@ -1019,43 +1027,76 @@ export class AccessClient {
   async checkAccess(input: CheckAccessInput): Promise<AccessCheckResult> {
     const gateId = await this.resolveGateId(input.gateId);
     const shouldWrite = input.mode === "onchain_write";
+    const source: CheckSource = shouldWrite ? "onchain_write" : "simulate";
 
     if (shouldWrite && !this.onchainSigner) {
       return {
         passed: false,
-        source: "onchain_write",
+        source,
         reason:
           "On-chain write mode requested, but ONCHAIN_CHECKER_KEYPAIR_PATH is not configured or invalid."
+      };
+    }
+
+    let gatePk: PublicKey;
+    let walletPk: PublicKey;
+    try {
+      gatePk = new PublicKey(gateId);
+      walletPk = new PublicKey(input.walletPubkey);
+    } catch {
+      return {
+        passed: false,
+        source,
+        reason: "Invalid gate or wallet public key."
       };
     }
 
     const argsVariants = [
       [
         {
+          accessId: gatePk,
           gateId,
-          wallet: input.walletPubkey,
+          gate: gatePk,
+          user: walletPk,
+          wallet: walletPk,
           walletPubkey: input.walletPubkey,
           mode: shouldWrite ? "write" : "simulate",
           write: shouldWrite,
           writeRecord: shouldWrite,
+          storeRecord: shouldWrite,
           cluster: config.cluster,
           connection: this.connection,
           signer: this.onchainSigner,
           programs: config.programs
         }
       ],
+      [{ accessId: gatePk, user: walletPk, storeRecord: shouldWrite }],
+      [{ gateId: gatePk, user: walletPk, storeRecord: shouldWrite }],
       [gateId, input.walletPubkey, { write: shouldWrite, cluster: config.cluster }],
       [input.walletPubkey, gateId, { write: shouldWrite, cluster: config.cluster }]
     ];
 
+    const methodNames = shouldWrite
+      ? ["checkAccess", "checkGate", "checkGateAccess", "check", "canAccess", "evaluateAccess"]
+      : [
+          "simulateCheckAccess",
+          "simulateCheckGate",
+          "checkAccess",
+          "checkGate",
+          "checkGateAccess",
+          "check",
+          "canAccess",
+          "evaluateAccess"
+        ];
+
     const raw = await this.withRpcTimeout("checkAccess", () =>
       this.invokeFirst(
-        ["checkAccess", "checkGateAccess", "check", "canAccess", "evaluateAccess"],
+        methodNames,
         argsVariants,
         "Access check failed"
       )
     );
 
-    return normalizeResult(raw, shouldWrite ? "onchain_write" : "simulate");
+    return normalizeResult(raw, source);
   }
 }
