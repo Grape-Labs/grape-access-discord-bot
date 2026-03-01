@@ -1423,6 +1423,9 @@ export class AccessClient {
     normalized.proof = {
       ...(normalized.proof ?? {}),
       diagnostic: {
+        verificationDaoId: input.verificationDaoId,
+        reputationDaoId: input.reputationDaoId,
+        identifiersTried: identifiers,
         usedIdentityAccount: identityAccount?.toBase58(),
         usedLinkAccount: linkAccount?.toBase58(),
         usedReputationAccount: reputationAccount?.toBase58(),

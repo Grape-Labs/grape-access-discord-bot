@@ -640,8 +640,27 @@ export class InteractionWebhookHandler {
           failedCount += 1;
         }
 
+        let reasonText = result.reason ?? "no_reason";
+        if (
+          !result.passed &&
+          result.reason === "discord_identity_not_found_for_verification_criteria" &&
+          verificationDaoId
+        ) {
+          const status = await this.accessClient.getDiscordVerificationStatus({
+            daoId: verificationDaoId,
+            discordUserId,
+            identifiers: identityCandidates
+          });
+          reasonText = [
+            result.reason,
+            `verification_dao_id=${verificationDaoId}`,
+            `identity_found=${status.identityFound}`,
+            `matched_identifier=${status.matchedIdentifier ?? "none"}`
+          ].join(" ");
+        }
+
         lines.push(
-          `gate ${map.gateId}: ${result.passed ? "PASS" : "FAIL"} (${result.reason ?? "no_reason"})`
+          `gate ${map.gateId}: ${result.passed ? "PASS" : "FAIL"} (${reasonText})`
         );
 
         logger.info(
