@@ -1072,20 +1072,38 @@ export class AccessClient {
     if (!salt) {
       return {};
     }
-    const walletHashBytes = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
-
-    let walletHashBase58: string;
-    try {
-      walletHashBase58 = new PublicKey(walletHashBytes).toBase58();
-    } catch {
-      return {};
+    const primaryWalletHash = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
+    const hashCandidates = new Map<string, Uint8Array>();
+    hashCandidates.set(Buffer.from(primaryWalletHash).toString("hex"), primaryWalletHash);
+    for (const candidate of this.walletHashCandidates(walletPk)) {
+      hashCandidates.set(Buffer.from(candidate).toString("hex"), candidate);
     }
 
-    const candidateLinks = await this.withRpcTimeout("getProgramAccounts(link by wallet_hash)", () =>
-      this.connection.getProgramAccounts(this.verificationProgramId, {
-        filters: [{ memcmp: { offset: 8 + 1 + 32, bytes: walletHashBase58 } }]
-      })
-    );
+    const candidateLinks: Array<{ pubkey: PublicKey; account: { data: Buffer } }> = [];
+    const seenLinkPubkeys = new Set<string>();
+    for (const walletHashBytes of hashCandidates.values()) {
+      let walletHashBase58: string;
+      try {
+        walletHashBase58 = new PublicKey(walletHashBytes).toBase58();
+      } catch {
+        continue;
+      }
+
+      const links = await this.withRpcTimeout("getProgramAccounts(link by wallet_hash)", () =>
+        this.connection.getProgramAccounts(this.verificationProgramId, {
+          filters: [{ memcmp: { offset: 8 + 1 + 32, bytes: walletHashBase58 } }]
+        })
+      );
+
+      for (const link of links) {
+        const key = link.pubkey.toBase58();
+        if (seenLinkPubkeys.has(key)) {
+          continue;
+        }
+        seenLinkPubkeys.add(key);
+        candidateLinks.push(link as { pubkey: PublicKey; account: { data: Buffer } });
+      }
+    }
 
     const spaceBuf = spacePda.toBuffer();
     let fallback: { identityAccount?: PublicKey; linkAccount?: PublicKey } = {};
