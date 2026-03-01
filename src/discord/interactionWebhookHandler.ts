@@ -654,8 +654,10 @@ export class InteractionWebhookHandler {
           reasonText = [
             result.reason,
             `verification_dao_id=${verificationDaoId}`,
+            `discord_user_id=${discordUserId}`,
             `identity_found=${status.identityFound}`,
-            `matched_identifier=${status.matchedIdentifier ?? "none"}`
+            `matched_identifier=${status.matchedIdentifier ?? "none"}`,
+            `identifiers=${identityCandidates.join(",")}`
           ].join(" ");
         }
 
