@@ -4,6 +4,7 @@ Discord bot that assigns/removes roles based on Grape Access checks using:
 
 - Discord Interactions webhook (`/api/discord/interactions`)
 - Verification callback (`/api/verification/link`)
+- Verification callback alias (`/api/discord/callback`)
 - Vercel Cron worker (`/api/cron/revalidate`)
 
 ## State persistence
@@ -76,7 +77,7 @@ For direct RPC connectivity diagnostics from your deployed runtime:
 
 ## Verification callback format
 
-POST `/api/verification/link`
+POST/GET `/api/verification/link` (alias: `/api/discord/callback`)
 
 Headers:
 
@@ -90,6 +91,13 @@ JSON body:
 - `gateId` (optional; if set, syncs only that gate)
 - `verifiedAt` (optional)
 - `source` (optional)
+
+GET query aliases supported:
+
+- `discordUserId` or `discord_user_id`
+- `walletPubkey` or `wallet` or `wallet_pubkey`
+- `guildId` or `guild_id`
+- `gateId` or `gate_id`
 
 ## Program IDs
 
