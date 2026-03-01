@@ -29,6 +29,16 @@ export interface LatestWalletLink {
   verifiedAt: string;
 }
 
+export interface IdentityOverride {
+  guildId: string;
+  gateId: string;
+  discordUserId: string;
+  identityAccount: string;
+  linkAccount?: string;
+  source: string;
+  updatedAt: string;
+}
+
 export interface CheckResult {
   discordUserId?: string;
   guildId?: string;

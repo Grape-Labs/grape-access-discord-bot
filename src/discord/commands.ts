@@ -59,6 +59,19 @@ export const commandBuilders = [
     ),
 
   new SlashCommandBuilder()
+    .setName("link-identity")
+    .setDescription("Manually set identity/link PDAs for your checks in this guild")
+    .addStringOption((opt) =>
+      opt.setName("gate_id").setDescription("Gate identifier or alias").setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName("identity_pda").setDescription("Verification identity PDA").setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName("link_pda").setDescription("Verification link PDA (optional)").setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName("link-wallet")
     .setDescription("Manually link your wallet for this server (testing)")
     .addStringOption((opt) =>

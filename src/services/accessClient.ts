@@ -13,6 +13,8 @@ interface CheckAccessInput {
   identifiers?: string[];
   verificationDaoId?: string;
   reputationDaoId?: string;
+  identityAccountOverride?: string;
+  linkAccountOverride?: string;
 }
 
 export interface IdentityDebugResult {
@@ -1593,15 +1595,39 @@ export class AccessClient {
     const needVerification = Boolean(grapeSpace) || Boolean(input.verificationDaoId) || identifiers.length > 0;
     let identityAccount: PublicKey | undefined;
     let linkAccount: PublicKey | undefined;
-    if (needVerification && identifiers.length > 0) {
+
+    if (input.identityAccountOverride) {
+      try {
+        identityAccount = new PublicKey(input.identityAccountOverride);
+      } catch {
+        return {
+          passed: false,
+          source,
+          reason: "invalid_identity_override_pubkey"
+        };
+      }
+    }
+    if (input.linkAccountOverride) {
+      try {
+        linkAccount = new PublicKey(input.linkAccountOverride);
+      } catch {
+        return {
+          passed: false,
+          source,
+          reason: "invalid_link_override_pubkey"
+        };
+      }
+    }
+
+    if (needVerification && identifiers.length > 0 && !identityAccount) {
       const identityAndLink = await this.deriveDiscordIdentityAndLinkAccounts({
         walletPubkey: input.walletPubkey,
         identifiers,
         grapeSpace,
         verificationDaoId: input.verificationDaoId
       });
-      identityAccount = identityAndLink.identityAccount;
-      linkAccount = identityAndLink.linkAccount;
+      identityAccount = identityAndLink.identityAccount ?? identityAccount;
+      linkAccount = linkAccount ?? identityAndLink.linkAccount;
     }
     if (needVerification && !identityAccount) {
       const byWallet = await this.deriveIdentityAndLinkFromWallet({
@@ -1658,6 +1684,8 @@ export class AccessClient {
             identifiersTried: identifiers,
             usedIdentityAccount: identityAccount?.toBase58(),
             usedLinkAccount: linkAccount?.toBase58(),
+            identityAccountOverride: input.identityAccountOverride,
+            linkAccountOverride: input.linkAccountOverride,
             usedReputationAccount: reputationAccount?.toBase58(),
             usedTokenAccount: tokenAccount?.toBase58(),
             hasVineConfig: Boolean(vineConfig),
@@ -1702,6 +1730,8 @@ export class AccessClient {
           identifiersTried: identifiers,
           usedIdentityAccount: identityAccount?.toBase58(),
           usedLinkAccount: linkAccount?.toBase58(),
+          identityAccountOverride: input.identityAccountOverride,
+          linkAccountOverride: input.linkAccountOverride,
           usedReputationAccount: reputationAccount?.toBase58(),
           usedTokenAccount: tokenAccount?.toBase58(),
           hasVineConfig: Boolean(vineConfig),
@@ -1803,6 +1833,8 @@ export class AccessClient {
             identifiersTried: identifiers,
             usedIdentityAccount: identityAccount?.toBase58(),
             usedLinkAccount: linkAccount?.toBase58(),
+            identityAccountOverride: input.identityAccountOverride,
+            linkAccountOverride: input.linkAccountOverride,
             usedReputationAccount: reputationAccount?.toBase58(),
             usedTokenAccount: tokenAccount?.toBase58(),
             hasVineConfig: Boolean(vineConfig),

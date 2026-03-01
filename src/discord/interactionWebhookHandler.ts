@@ -166,6 +166,8 @@ export class InteractionWebhookHandler {
         return this.handleCheck(interaction);
       case "debug-identity":
         return this.handleDebugIdentity(interaction);
+      case "link-identity":
+        return this.handleLinkIdentity(interaction);
       case "link-wallet":
         return this.handleLinkWallet(interaction);
       case "sync-gate":
@@ -209,6 +211,86 @@ export class InteractionWebhookHandler {
         `wallet: ${latest?.walletPubkey ?? wallet}`,
         `verified_at: ${latest?.verifiedAt ?? new Date().toISOString()}`,
         "Run /check now."
+      ].join("\n")
+    );
+  }
+
+  private async handleLinkIdentity(interaction: DiscordInteraction): Promise<InteractionResult> {
+    const guildId = interaction.guild_id;
+    const discordUserId = interaction.member?.user?.id ?? interaction.user?.id;
+    if (!guildId || !discordUserId) {
+      return ephemeralMessage("This command must be run in a server.");
+    }
+
+    const requestedGateId = getOptionString(interaction.data?.options, "gate_id");
+    const identityPda = getOptionString(interaction.data?.options, "identity_pda");
+    const linkPda = getOptionString(interaction.data?.options, "link_pda");
+
+    if (!requestedGateId || !identityPda) {
+      return ephemeralMessage("Missing required options: gate_id, identity_pda.");
+    }
+
+    try {
+      new PublicKey(identityPda);
+    } catch {
+      return ephemeralMessage("Invalid identity_pda pubkey.");
+    }
+
+    if (linkPda) {
+      try {
+        new PublicKey(linkPda);
+      } catch {
+        return ephemeralMessage("Invalid link_pda pubkey.");
+      }
+    }
+
+    const resolvedGateId = await this.accessClient.resolveGateId(requestedGateId);
+    let gateMap =
+      (await this.store.getGateMapping(guildId, requestedGateId)) ??
+      (await this.store.getGateMapping(guildId, resolvedGateId));
+
+    if (!gateMap) {
+      const guildMaps = await this.store.listEnabledGateMappings(guildId);
+      for (const candidate of guildMaps) {
+        if (candidate.gateId === requestedGateId || candidate.gateId === resolvedGateId) {
+          gateMap = candidate;
+          break;
+        }
+
+        const candidateResolved = await this.accessClient.resolveGateId(candidate.gateId);
+        if (candidateResolved === resolvedGateId) {
+          gateMap = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!gateMap || !gateMap.enabled) {
+      return ephemeralMessage(
+        `No enabled mapping found in this guild for gate ${requestedGateId}${resolvedGateId !== requestedGateId ? ` (resolved: ${resolvedGateId})` : ""}.`
+      );
+    }
+
+    const saved = await this.store.upsertIdentityOverride({
+      guildId,
+      gateId: gateMap.gateId,
+      discordUserId,
+      identityAccount: identityPda,
+      linkAccount: linkPda,
+      source: "manual_link_identity_command"
+    });
+
+    return ephemeralMessage(
+      [
+        "Manual identity override saved.",
+        `guild_id: ${saved.guildId}`,
+        `discord_user_id: ${saved.discordUserId}`,
+        `gate_id: ${saved.gateId}`,
+        `identity_pda: ${saved.identityAccount}`,
+        `link_pda: ${saved.linkAccount ?? "not_set"}`,
+        `updated_at: ${saved.updatedAt}`,
+        "Run /check now.",
+        "Tip: use /debug-identity to compare auto-resolution vs manual override."
       ].join("\n")
     );
   }
@@ -626,6 +708,8 @@ export class InteractionWebhookHandler {
         });
       }
 
+      const identityOverride = await this.store.getIdentityOverride(guildId, map.gateId, discordUserId);
+
       try {
         const result = await retryWithBackoff(
           () =>
@@ -636,7 +720,9 @@ export class InteractionWebhookHandler {
               discordUserId,
               identifiers: identityCandidates,
               verificationDaoId,
-              reputationDaoId
+              reputationDaoId,
+              identityAccountOverride: identityOverride?.identityAccount,
+              linkAccountOverride: identityOverride?.linkAccount
             }),
           {
             maxAttempts: 4,
@@ -707,6 +793,21 @@ export class InteractionWebhookHandler {
                 guildId,
                 gateId: map.gateId
               })}`
+            );
+            lines.push(
+              "action: if you already verified, run /link-identity with your identity PDA (and optional link PDA)."
+            );
+          }
+
+          if (result.reason === "invalid_identity_account_custom_6008") {
+            lines.push(
+              "action: provided identity account is invalid for this gate space; re-check the identity PDA."
+            );
+          }
+
+          if (result.reason === "link_account_required_custom_6005" && identityOverride?.identityAccount) {
+            lines.push(
+              "action: identity override is present but link PDA is missing/invalid; re-run /link-identity with link_pda."
             );
           }
         }
@@ -788,6 +889,7 @@ export class InteractionWebhookHandler {
       map.verificationDaoId || map.daoId ? {} : await this.accessClient.getGateDaoIds(map.gateId);
     const verificationDaoId =
       map.verificationDaoId ?? map.daoId ?? onchainDaoIds.verificationDaoId ?? onchainDaoIds.daoId;
+    const identityOverride = await this.store.getIdentityOverride(guildId, map.gateId, discordUserId);
 
     const debug = await this.accessClient.debugIdentityResolution({
       gateId: map.gateId,
@@ -810,6 +912,8 @@ export class InteractionWebhookHandler {
         `verification_identity_found: ${debug.verificationStatus?.identityFound ?? false}`,
         `verification_identity_pda: ${debug.verificationStatus?.identityPda ?? "none"}`,
         `verification_matched_identifier: ${debug.verificationStatus?.matchedIdentifier ?? "none"}`,
+        `manual_override.identity: ${identityOverride?.identityAccount ?? "none"}`,
+        `manual_override.link: ${identityOverride?.linkAccount ?? "none"}`,
         `from_identifiers.identity: ${debug.fromIdentifiers?.identityAccount ?? "none"}`,
         `from_identifiers.link: ${debug.fromIdentifiers?.linkAccount ?? "none"}`,
         `from_wallet_fallback.identity: ${debug.fromWalletFallback?.identityAccount ?? "none"}`,

@@ -1,9 +1,18 @@
 import { kv } from "@vercel/kv";
 import { config } from "./config.js";
-import { CheckResult, FailAction, GateMapping, LatestWalletLink, SyncJob, WalletLink } from "./types.js";
+import {
+  CheckResult,
+  FailAction,
+  GateMapping,
+  IdentityOverride,
+  LatestWalletLink,
+  SyncJob,
+  WalletLink
+} from "./types.js";
 
 type InMemoryState = {
   gateMappings: Map<string, GateMapping>;
+  identityOverrides: Map<string, IdentityOverride>;
   walletLinks: WalletLink[];
   checkResults: CheckResult[];
   syncJobs: SyncJob[];
@@ -19,15 +28,24 @@ function gateMapMemKey(guildId: string, gateId: string): string {
   return `${guildId}:${gateId}`;
 }
 
+function identityOverrideMemKey(guildId: string, gateId: string, discordUserId: string): string {
+  return `${guildId}:${gateId}:${discordUserId}`;
+}
+
 function getMemoryState(): InMemoryState {
   if (!globalThis.__grapeAccessBotState__) {
     globalThis.__grapeAccessBotState__ = {
       gateMappings: new Map<string, GateMapping>(),
+      identityOverrides: new Map<string, IdentityOverride>(),
       walletLinks: [],
       checkResults: [],
       syncJobs: [],
       lastGateRunMs: new Map<string, number>()
     };
+  }
+
+  if (!globalThis.__grapeAccessBotState__.identityOverrides) {
+    globalThis.__grapeAccessBotState__.identityOverrides = new Map<string, IdentityOverride>();
   }
 
   return globalThis.__grapeAccessBotState__;
@@ -157,6 +175,10 @@ export class InMemoryStore {
 
   private gateMapKey(guildId: string, gateId: string): string {
     return this.withPrefix("gate", guildId, gateId);
+  }
+
+  private identityOverrideKey(guildId: string, gateId: string, discordUserId: string): string {
+    return this.withPrefix("identity-override", guildId, gateId, discordUserId);
   }
 
   private gateIndexKey(): string {
@@ -326,6 +348,54 @@ export class InMemoryStore {
     }
 
     return out;
+  }
+
+  async upsertIdentityOverride(params: {
+    guildId: string;
+    gateId: string;
+    discordUserId: string;
+    identityAccount: string;
+    linkAccount?: string;
+    source?: string;
+  }): Promise<IdentityOverride> {
+    await this.ensureBootstrapped();
+
+    const override: IdentityOverride = {
+      guildId: params.guildId,
+      gateId: params.gateId,
+      discordUserId: params.discordUserId,
+      identityAccount: params.identityAccount,
+      linkAccount: params.linkAccount,
+      source: params.source ?? "manual",
+      updatedAt: new Date().toISOString()
+    };
+
+    if (this.useKv) {
+      await kv.set(this.identityOverrideKey(params.guildId, params.gateId, params.discordUserId), override);
+      return override;
+    }
+
+    this.state.identityOverrides.set(
+      identityOverrideMemKey(params.guildId, params.gateId, params.discordUserId),
+      override
+    );
+    return override;
+  }
+
+  async getIdentityOverride(
+    guildId: string,
+    gateId: string,
+    discordUserId: string
+  ): Promise<IdentityOverride | undefined> {
+    await this.ensureBootstrapped();
+
+    if (this.useKv) {
+      return (
+        (await kv.get<IdentityOverride>(this.identityOverrideKey(guildId, gateId, discordUserId))) ?? undefined
+      );
+    }
+
+    return this.state.identityOverrides.get(identityOverrideMemKey(guildId, gateId, discordUserId));
   }
 
   async addWalletLink(link: {
