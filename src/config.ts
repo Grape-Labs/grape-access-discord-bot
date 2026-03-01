@@ -34,6 +34,8 @@ const envSchema = z.object({
 type BootstrapGate = {
   guildId: string;
   gateId: string;
+  verificationDaoId?: string;
+  reputationDaoId?: string;
   daoId?: string;
   passRoleId: string;
   failAction?: FailAction;
@@ -64,6 +66,18 @@ function parseBootstrapGates(raw: string | undefined): BootstrapGate[] {
       const rec = item as Record<string, unknown>;
       const guildId = typeof rec.guildId === "string" ? rec.guildId : undefined;
       const gateId = typeof rec.gateId === "string" ? rec.gateId : undefined;
+      const verificationDaoId =
+        typeof rec.verificationDaoId === "string"
+          ? rec.verificationDaoId
+          : typeof rec.verification_dao_id === "string"
+            ? rec.verification_dao_id
+            : undefined;
+      const reputationDaoId =
+        typeof rec.reputationDaoId === "string"
+          ? rec.reputationDaoId
+          : typeof rec.reputation_dao_id === "string"
+            ? rec.reputation_dao_id
+            : undefined;
       const daoId = typeof rec.daoId === "string" ? rec.daoId : undefined;
       const passRoleId = typeof rec.passRoleId === "string" ? rec.passRoleId : undefined;
       if (!guildId || !gateId || !passRoleId) {
@@ -73,6 +87,8 @@ function parseBootstrapGates(raw: string | undefined): BootstrapGate[] {
       out.push({
         guildId,
         gateId,
+        verificationDaoId,
+        reputationDaoId,
         daoId,
         passRoleId,
         failAction: rec.failAction === "remove_role" ? "remove_role" : "none",

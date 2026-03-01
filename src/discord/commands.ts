@@ -19,7 +19,19 @@ export const commandBuilders = [
     .addStringOption((opt) =>
       opt
         .setName("dao_id")
-        .setDescription("Governance DAO ID for verification/reputation links")
+        .setDescription("Fallback DAO ID for verification/reputation links")
+        .setRequired(false)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("verification_dao_id")
+        .setDescription("DAO ID used for verification identity lookup/link")
+        .setRequired(false)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("reputation_dao_id")
+        .setDescription("DAO ID used for reputation link/display")
         .setRequired(false)
     )
     .addStringOption((opt) =>

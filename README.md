@@ -20,13 +20,14 @@ Set a `KV_KEY_PREFIX` if you share the same KV instance with other apps.
 
 DAO ID resolution for `/verify` links:
 
-- Uses explicit `dao_id` from `/setup-gate` when provided
+- Uses explicit `verification_dao_id` and `reputation_dao_id` from `/setup-gate` when provided
+- Uses `dao_id` as fallback for either DAO when specific values are omitted
 - Otherwise attempts on-chain recovery from gate criteria accounts (Vine config / Grape space)
 - Falls back to manifest `daoId` when available
 
 ## Commands
 
-- `/setup-gate gate_id pass_role_id [guild_id] [dao_id] [fail_action]`
+- `/setup-gate gate_id pass_role_id [guild_id] [dao_id] [verification_dao_id] [reputation_dao_id] [fail_action]`
 - `/verify`
 - `/check`
 - `/link-wallet wallet`
@@ -61,7 +62,7 @@ Optional:
 - `REDIS_URL`
 - `KV_KEY_PREFIX` (default: `grape-access-discord-bot:v1`)
 - `BOOTSTRAP_GATES_JSON`
-  - Supports optional `daoId` for verification/reputation links.
+  - Supports optional `verificationDaoId`, `reputationDaoId`, and `daoId` fallback.
 
 ## Local dev
 

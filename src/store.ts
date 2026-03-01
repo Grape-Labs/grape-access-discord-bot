@@ -212,6 +212,8 @@ export class InMemoryStore {
         const mapping: GateMapping = {
           guildId: item.guildId,
           gateId: item.gateId,
+          verificationDaoId: item.verificationDaoId,
+          reputationDaoId: item.reputationDaoId,
           daoId: item.daoId,
           passRoleId: item.passRoleId,
           failAction: item.failAction ?? "none",
@@ -234,6 +236,8 @@ export class InMemoryStore {
       this.state.gateMappings.set(memKey, {
         guildId: item.guildId,
         gateId: item.gateId,
+        verificationDaoId: item.verificationDaoId,
+        reputationDaoId: item.reputationDaoId,
         daoId: item.daoId,
         passRoleId: item.passRoleId,
         failAction: item.failAction ?? "none",
@@ -246,6 +250,8 @@ export class InMemoryStore {
   async upsertGateMapping(params: {
     guildId: string;
     gateId: string;
+    verificationDaoId?: string;
+    reputationDaoId?: string;
     daoId?: string;
     passRoleId: string;
     failAction: FailAction;
@@ -256,6 +262,8 @@ export class InMemoryStore {
     const mapping: GateMapping = {
       guildId: params.guildId,
       gateId: params.gateId,
+      verificationDaoId: params.verificationDaoId,
+      reputationDaoId: params.reputationDaoId,
       daoId: params.daoId,
       passRoleId: params.passRoleId,
       failAction: params.failAction,

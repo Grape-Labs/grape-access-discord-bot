@@ -212,7 +212,9 @@ export class InteractionWebhookHandler {
     const interactionGuildId = interaction.guild_id;
     const guildId = interactionGuildId ?? providedGuildId;
     const passRoleId = getOptionString(options, "pass_role_id");
-    const daoId = getOptionString(options, "dao_id");
+    const daoIdFallback = getOptionString(options, "dao_id");
+    const verificationDaoIdInput = getOptionString(options, "verification_dao_id");
+    const reputationDaoIdInput = getOptionString(options, "reputation_dao_id");
     const failActionRaw = getOptionString(options, "fail_action");
 
     if (interactionGuildId && providedGuildId && providedGuildId !== interactionGuildId) {
@@ -231,13 +233,33 @@ export class InteractionWebhookHandler {
     }
 
     const hints = await this.manifestService.getHints(gateId);
-    const onchainDaoId = daoId ? undefined : await this.accessClient.getGateDaoId(gateId);
-    const resolvedDaoId = daoId ?? onchainDaoId ?? hints.daoId;
+    const needsOnchainLookup = !verificationDaoIdInput || !reputationDaoIdInput || !daoIdFallback;
+    const onchainDaoIds = needsOnchainLookup ? await this.accessClient.getGateDaoIds(gateId) : {};
+    const resolvedVerificationDaoId =
+      verificationDaoIdInput ??
+      daoIdFallback ??
+      onchainDaoIds.verificationDaoId ??
+      onchainDaoIds.daoId ??
+      hints.daoId;
+    const resolvedReputationDaoId =
+      reputationDaoIdInput ??
+      daoIdFallback ??
+      onchainDaoIds.reputationDaoId ??
+      onchainDaoIds.daoId ??
+      hints.daoId;
+    const resolvedDaoId =
+      daoIdFallback ??
+      onchainDaoIds.daoId ??
+      resolvedVerificationDaoId ??
+      resolvedReputationDaoId ??
+      hints.daoId;
     const failAction = (failActionRaw as FailAction | undefined) ?? hints.integrations?.discord?.failAction ?? "none";
 
     await this.store.upsertGateMapping({
       guildId,
       gateId,
+      verificationDaoId: resolvedVerificationDaoId,
+      reputationDaoId: resolvedReputationDaoId,
       daoId: resolvedDaoId,
       passRoleId,
       failAction,
@@ -251,10 +273,33 @@ export class InteractionWebhookHandler {
         "Gate mapping saved.",
         `guild_id: ${guildId}`,
         `gate_id: ${gateId}`,
+        `verification_dao_id: ${resolvedVerificationDaoId ?? "not_set"}`,
+        `reputation_dao_id: ${resolvedReputationDaoId ?? "not_set"}`,
         `dao_id: ${resolvedDaoId ?? "not_set"}`,
         `pass_role_id: ${passRoleId}`,
         `fail_action: ${failAction}`,
-        `dao_id_source: ${daoId ? "command" : onchainDaoId ? "onchain" : hints.daoId ? "manifest" : "missing"}`,
+        `verification_dao_id_source: ${
+          verificationDaoIdInput
+            ? "command:verification_dao_id"
+            : daoIdFallback
+              ? "command:dao_id_fallback"
+              : onchainDaoIds.verificationDaoId || onchainDaoIds.daoId
+                ? "onchain"
+                : hints.daoId
+                  ? "manifest"
+                  : "missing"
+        }`,
+        `reputation_dao_id_source: ${
+          reputationDaoIdInput
+            ? "command:reputation_dao_id"
+            : daoIdFallback
+              ? "command:dao_id_fallback"
+              : onchainDaoIds.reputationDaoId || onchainDaoIds.daoId
+                ? "onchain"
+                : hints.daoId
+                  ? "manifest"
+                  : "missing"
+        }`,
         `manifest_discord_hints: ${hints.schemaValid ? "present" : "not_found"}`,
         `storage_mode: ${this.store.getStorageMode()}`,
         `storage_missing_kv_env: ${
@@ -293,13 +338,32 @@ export class InteractionWebhookHandler {
     const lines: string[] = ["Access Links:"];
     for (const map of maps) {
       const hints = await this.manifestService.getHints(map.gateId);
-      const onchainDaoId = map.daoId ? undefined : await this.accessClient.getGateDaoId(map.gateId);
-      const daoId = map.daoId ?? onchainDaoId ?? hints.daoId;
+      const needsOnchainLookup = !map.verificationDaoId || !map.reputationDaoId || !map.daoId;
+      const onchainDaoIds = needsOnchainLookup ? await this.accessClient.getGateDaoIds(map.gateId) : {};
+      const verificationDaoId =
+        map.verificationDaoId ??
+        map.daoId ??
+        onchainDaoIds.verificationDaoId ??
+        onchainDaoIds.daoId ??
+        hints.daoId;
+      const reputationDaoId =
+        map.reputationDaoId ??
+        map.daoId ??
+        onchainDaoIds.reputationDaoId ??
+        onchainDaoIds.daoId ??
+        hints.daoId;
+      const daoId = map.daoId ?? onchainDaoIds.daoId ?? verificationDaoId ?? reputationDaoId;
 
-      if (daoId && map.daoId !== daoId) {
+      if (
+        daoId !== map.daoId ||
+        verificationDaoId !== map.verificationDaoId ||
+        reputationDaoId !== map.reputationDaoId
+      ) {
         await this.store.upsertGateMapping({
           guildId: map.guildId,
           gateId: map.gateId,
+          verificationDaoId,
+          reputationDaoId,
           daoId,
           passRoleId: map.passRoleId,
           failAction: map.failAction,
@@ -313,13 +377,16 @@ export class InteractionWebhookHandler {
       url.searchParams.set("discordUserId", discordUserId);
 
       lines.push(`gate_id ${map.gateId}: ${url.toString()}`);
-      if (daoId) {
-        lines.push(`verification: https://verification.governance.so/dao/${daoId}`);
-        lines.push(`reputation: https://vine.governance.so/dao/${daoId}`);
-      } else {
-        lines.push("verification: DAO_ID missing (set `dao_id` in /setup-gate)");
-        lines.push("reputation: DAO_ID missing (set `dao_id` in /setup-gate)");
-      }
+      lines.push(
+        verificationDaoId
+          ? `verification: https://verification.governance.so/dao/${verificationDaoId}`
+          : "verification: DAO_ID missing (set `verification_dao_id` or `dao_id` in /setup-gate)"
+      );
+      lines.push(
+        reputationDaoId
+          ? `reputation: https://vine.governance.so/dao/${reputationDaoId}`
+          : "reputation: DAO_ID missing (set `reputation_dao_id` or `dao_id` in /setup-gate)"
+      );
     }
 
     return ephemeralMessage(lines.join("\n"));
@@ -364,25 +431,37 @@ export class InteractionWebhookHandler {
       }> = [];
 
       for (const map of maps) {
-        const onchainDaoId = map.daoId ?? (await this.accessClient.getGateDaoId(map.gateId));
-        if (!onchainDaoId) {
-          lookupNotes.push(`gate ${map.gateId}: dao_id unresolved`);
-          continue;
-        }
+        const onchainDaoIds =
+          map.verificationDaoId || map.daoId ? {} : await this.accessClient.getGateDaoIds(map.gateId);
+        const verificationDaoId =
+          map.verificationDaoId ?? map.daoId ?? onchainDaoIds.verificationDaoId ?? onchainDaoIds.daoId;
+        const reputationDaoId = map.reputationDaoId ?? onchainDaoIds.reputationDaoId;
+        const daoId = map.daoId ?? onchainDaoIds.daoId ?? verificationDaoId ?? reputationDaoId;
 
-        if (map.daoId !== onchainDaoId) {
+        if (
+          daoId !== map.daoId ||
+          verificationDaoId !== map.verificationDaoId ||
+          (reputationDaoId && reputationDaoId !== map.reputationDaoId)
+        ) {
           await this.store.upsertGateMapping({
             guildId: map.guildId,
             gateId: map.gateId,
-            daoId: onchainDaoId,
+            verificationDaoId,
+            reputationDaoId,
+            daoId,
             passRoleId: map.passRoleId,
             failAction: map.failAction,
             enabled: map.enabled
           });
         }
 
+        if (!verificationDaoId) {
+          lookupNotes.push(`gate ${map.gateId}: verification_dao_id unresolved`);
+          continue;
+        }
+
         const walletFromVerification = await this.accessClient.getVerifiedWalletForDiscordUser({
-          daoId: onchainDaoId,
+          daoId: verificationDaoId,
           discordUserId,
           identifiers: identityCandidates
         });
@@ -400,7 +479,7 @@ export class InteractionWebhookHandler {
         }
 
         const verificationStatus = await this.accessClient.getDiscordVerificationStatus({
-          daoId: onchainDaoId,
+          daoId: verificationDaoId,
           discordUserId,
           identifiers: identityCandidates
         });
@@ -419,7 +498,7 @@ export class InteractionWebhookHandler {
           );
         } else {
           lookupNotes.push(
-            `gate ${map.gateId}: no verification link match for dao ${onchainDaoId} (${verificationStatus.reason ?? "identity_not_found"})`
+            `gate ${map.gateId}: no verification link match for verification_dao_id ${verificationDaoId} (${verificationStatus.reason ?? "identity_not_found"})`
           );
         }
       }
@@ -483,7 +562,7 @@ export class InteractionWebhookHandler {
         [
           "No linked wallet found for your Discord user.",
           "Run /verify and complete verification first so the bot can read your latest verified wallet.",
-          "If already verified on-chain, ensure dao_id can be resolved for this gate and the Discord identity hash matches."
+          "If already verified on-chain, ensure verification_dao_id (or dao_id fallback) resolves for this gate and the Discord identity hash matches."
         ].join("\n")
       );
     }

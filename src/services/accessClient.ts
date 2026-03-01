@@ -536,21 +536,97 @@ export class AccessClient {
     return undefined;
   }
 
-  async getGateDaoId(gateIdOrAlias: string): Promise<string | undefined> {
+  async getGateDaoIds(gateIdOrAlias: string): Promise<{
+    verificationDaoId?: string;
+    reputationDaoId?: string;
+    daoId?: string;
+  }> {
     const raw = await this.fetchGateObject(gateIdOrAlias);
     const gate = this.extractGateRecord(raw);
     if (!gate) {
-      return undefined;
+      return {};
     }
 
-    const directCandidates = [
+    const directFallbackCandidates = [
       gate.daoId,
       gate.dao_id,
       gate.dao,
       asRecord(gate.metadata)?.daoId,
       asRecord(gate.metadata)?.dao_id
     ];
+    const directVerificationCandidates = [
+      gate.verificationDaoId,
+      gate.verification_dao_id,
+      asRecord(gate.metadata)?.verificationDaoId,
+      asRecord(gate.metadata)?.verification_dao_id
+    ];
+    const directReputationCandidates = [
+      gate.reputationDaoId,
+      gate.reputation_dao_id,
+      asRecord(gate.metadata)?.reputationDaoId,
+      asRecord(gate.metadata)?.reputation_dao_id
+    ];
 
+    const pickDao = (candidates: unknown[]): string | undefined => {
+      for (const candidate of candidates) {
+        const pk = toPublicKey(candidate);
+        if (pk) {
+          return pk.toBase58();
+        }
+        if (typeof candidate === "string" && candidate.length > 0) {
+          return candidate;
+        }
+      }
+      return undefined;
+    };
+
+    const fallbackDaoId = pickDao(directFallbackCandidates);
+    let verificationDaoId = pickDao(directVerificationCandidates);
+    let reputationDaoId = pickDao(directReputationCandidates);
+
+    const criteria = asRecord(gate.criteria) ?? asRecord(asRecord(gate.account)?.criteria);
+    if (criteria) {
+      if (!reputationDaoId) {
+        const vineConfigCandidates = this.collectNamedPublicKeys(criteria, new Set(["vineConfig"]));
+        for (const vineConfig of vineConfigCandidates) {
+          const daoId = await this.recoverDaoIdFromSeededAccount({
+            sourcePda: vineConfig,
+            seedPrefix: "config",
+            programId: this.reputationProgramId
+          });
+          if (daoId) {
+            reputationDaoId = daoId;
+            break;
+          }
+        }
+      }
+
+      if (!verificationDaoId) {
+        const grapeSpaceCandidates = this.collectNamedPublicKeys(criteria, new Set(["grapeSpace"]));
+        for (const grapeSpace of grapeSpaceCandidates) {
+          const daoId = await this.recoverDaoIdFromSeededAccount({
+            sourcePda: grapeSpace,
+            seedPrefix: "space",
+            programId: this.verificationProgramId
+          });
+          if (daoId) {
+            verificationDaoId = daoId;
+            break;
+          }
+        }
+      }
+    }
+
+    return {
+      verificationDaoId: verificationDaoId ?? fallbackDaoId,
+      reputationDaoId: reputationDaoId ?? fallbackDaoId,
+      daoId: fallbackDaoId
+    };
+  }
+
+  async getGateDaoId(gateIdOrAlias: string): Promise<string | undefined> {
+    const ids = await this.getGateDaoIds(gateIdOrAlias);
+    const directCandidates = [ids.verificationDaoId, ids.reputationDaoId, ids.daoId];
     for (const candidate of directCandidates) {
       const pk = toPublicKey(candidate);
       if (pk) {
@@ -560,36 +636,6 @@ export class AccessClient {
         return candidate;
       }
     }
-
-    const criteria = asRecord(gate.criteria) ?? asRecord(asRecord(gate.account)?.criteria);
-    if (!criteria) {
-      return undefined;
-    }
-
-    const vineConfigCandidates = this.collectNamedPublicKeys(criteria, new Set(["vineConfig"]));
-    for (const vineConfig of vineConfigCandidates) {
-      const daoId = await this.recoverDaoIdFromSeededAccount({
-        sourcePda: vineConfig,
-        seedPrefix: "config",
-        programId: this.reputationProgramId
-      });
-      if (daoId) {
-        return daoId;
-      }
-    }
-
-    const grapeSpaceCandidates = this.collectNamedPublicKeys(criteria, new Set(["grapeSpace"]));
-    for (const grapeSpace of grapeSpaceCandidates) {
-      const daoId = await this.recoverDaoIdFromSeededAccount({
-        sourcePda: grapeSpace,
-        seedPrefix: "space",
-        programId: this.verificationProgramId
-      });
-      if (daoId) {
-        return daoId;
-      }
-    }
-
     return undefined;
   }
 
