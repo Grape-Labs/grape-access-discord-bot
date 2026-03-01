@@ -933,10 +933,9 @@ export class AccessClient {
     }
 
     const deriveSpacePda = gvr.deriveSpacePda;
-    const deriveLinkPda = gvr.deriveLinkPda;
     const walletHash = gvr.walletHash;
 
-    if (typeof deriveLinkPda !== "function" || typeof walletHash !== "function") {
+    if (typeof walletHash !== "function") {
       return {};
     }
 
@@ -974,28 +973,68 @@ export class AccessClient {
     }
     const walletHashBytes = Reflect.apply(walletHash, gvr, [salt, walletPk]) as Uint8Array;
 
-    const identities = await this.withRpcTimeout("getProgramAccounts(identity by space)", () =>
+    let walletHashBase58: string;
+    try {
+      walletHashBase58 = new PublicKey(walletHashBytes).toBase58();
+    } catch {
+      return {};
+    }
+
+    const candidateLinks = await this.withRpcTimeout("getProgramAccounts(link by wallet_hash)", () =>
       this.connection.getProgramAccounts(this.verificationProgramId, {
-        filters: [{ memcmp: { offset: 9, bytes: spacePda.toBase58() } }]
+        filters: [{ memcmp: { offset: 8 + 1 + 32, bytes: walletHashBase58 } }]
       })
     );
 
-    for (const identity of identities) {
-      const identityPda = identity.pubkey;
-      try {
-        const [linkPda] = Reflect.apply(deriveLinkPda, gvr, [identityPda, walletHashBytes]) as [PublicKey, number];
-        const linkInfo = await this.withRpcTimeout("getAccountInfo(link)", () =>
-          this.connection.getAccountInfo(linkPda, "confirmed")
-        );
-        if (linkInfo) {
-          return {
-            identityAccount: identityPda,
-            linkAccount: linkPda
-          };
-        }
-      } catch {
-        // Keep scanning identities in the same space.
+    const spaceBuf = spacePda.toBuffer();
+    let fallback: { identityAccount?: PublicKey; linkAccount?: PublicKey } = {};
+
+    for (const link of candidateLinks) {
+      const data = link.account.data;
+      if (!(data instanceof Buffer) || data.length < 8 + 1 + 32) {
+        continue;
       }
+
+      const identityBytes = data.subarray(8 + 1, 8 + 1 + 32);
+      let identityPda: PublicKey;
+      try {
+        identityPda = new PublicKey(identityBytes);
+      } catch {
+        continue;
+      }
+
+      const identityInfo = await this.withRpcTimeout("getAccountInfo(identity)", () =>
+        this.connection.getAccountInfo(identityPda, "confirmed")
+      );
+      if (!identityInfo) {
+        continue;
+      }
+
+      const spaceMatchOffsets = [8 + 1, 8, 8 + 1 + 32, 8 + 1 + 32 + 32, 9];
+      const matchesSpace = spaceMatchOffsets.some((offset) => {
+        if (identityInfo.data.length < offset + 32) {
+          return false;
+        }
+        return identityInfo.data.subarray(offset, offset + 32).equals(spaceBuf);
+      });
+
+      if (matchesSpace) {
+        return {
+          identityAccount: identityPda,
+          linkAccount: link.pubkey
+        };
+      }
+
+      if (!fallback.identityAccount) {
+        fallback = {
+          identityAccount: identityPda,
+          linkAccount: link.pubkey
+        };
+      }
+    }
+
+    if (fallback.identityAccount) {
+      return fallback;
     }
 
     return {};
